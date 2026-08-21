@@ -1,0 +1,5 @@
+# 绘图与表格读取；HTTP Server 与 Web 前端均使用 Python/浏览器标准库。
+matplotlib>=3.7,<4
+numpy>=1.24,<3
+openpyxl>=3.1,<4
+Pillow>=9.5
