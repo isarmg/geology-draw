@@ -158,6 +158,18 @@ class HTTPServerEndToEndTests(unittest.TestCase):
                          MAX_UPLOAD_BYTES)
         self.assertIn("png", capabilities["render"]["formats"])
         self.assertIn("A4", capabilities["render"]["pages"])
+        self.assertEqual(
+            capabilities["render"]["width_limits"]["图例"]["min"], 3.0)
+        self.assertEqual(
+            capabilities["render"]["pattern_row_height_mm"],
+            {
+                "default": 2.5,
+                "min": 1.0,
+                "max": 10.0,
+                "step": 0.1,
+                "unit": "mm",
+            },
+        )
         self.assertEqual(capabilities["document"]["kinds"],
                          ["column", "section"])
 
@@ -178,6 +190,14 @@ class HTTPServerEndToEndTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "image/png")
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        status, headers, legend_png = self._json_request(
+            "POST", render_path,
+            {"format": "png", "dpi": 72,
+             "options": {"show_legend": True}})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "image/png")
+        self.assertTrue(legend_png.startswith(b"\x89PNG\r\n\x1a\n"))
 
         status, headers, pdf = self._json_request(
             "POST", render_path, {"format": "pdf", "dpi": 36})
@@ -218,6 +238,67 @@ class HTTPServerEndToEndTests(unittest.TestCase):
             self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
         finally:
             self._request("DELETE", "/api/v1/documents/%s" % document_id)
+
+    def test_pattern_row_height_is_validated_and_propagated(self):
+        documents = []
+        try:
+            fixtures = (
+                ("row-height-column.csv", COLUMN_CSV, "column"),
+                ("row-height-section.csv", SECTION_CSV, "section"),
+            )
+            for filename, raw, kind in fixtures:
+                metadata, _headers = self._upload(filename, raw)
+                document_id = metadata["id"]
+                documents.append(document_id)
+                self.assertEqual(metadata["kind"], kind)
+                render_path = "/api/v1/documents/%s/render" % document_id
+
+                status, _headers, implicit_default = self._json_request(
+                    "POST", render_path, {"format": "png", "dpi": 72})
+                self.assertEqual(status, 200)
+
+                status, _headers, explicit_default = self._json_request(
+                    "POST", render_path,
+                    {"format": "png", "dpi": 72,
+                     "options": {"pattern_row_height_mm": 2.5}},
+                )
+                self.assertEqual(status, 200)
+
+                status, _headers, custom_height = self._json_request(
+                    "POST", render_path,
+                    {"format": "png", "dpi": 72,
+                     "options": {"pattern_row_height_mm": 4.0}},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(hashlib.sha256(implicit_default).digest(),
+                                 hashlib.sha256(explicit_default).digest())
+                self.assertNotEqual(hashlib.sha256(implicit_default).digest(),
+                                    hashlib.sha256(custom_height).digest())
+
+                for invalid in (True, 0.9, 10.1):
+                    with self.subTest(kind=kind, invalid=invalid):
+                        response = self._json_request(
+                            "POST", render_path,
+                            {"format": "png", "dpi": 72,
+                             "options": {
+                                 "pattern_row_height_mm": invalid,
+                             }},
+                        )
+                        self._assert_error(response, 422, "invalid_option")
+
+                # JSON's exponent syntax can overflow to infinity even when
+                # literal NaN/Infinity tokens are never emitted by clients.
+                non_finite = self._request(
+                    "POST", render_path,
+                    body=(b'{"format":"png","options":'
+                          b'{"pattern_row_height_mm":1e309}}'),
+                    headers={"Content-Type": "application/json"},
+                )
+                self._assert_error(non_finite, 422, "non_finite_number")
+        finally:
+            for document_id in documents:
+                self._request(
+                    "DELETE", "/api/v1/documents/%s" % document_id)
 
     def test_templates_and_examples(self):
         for kind in ("column", "section"):

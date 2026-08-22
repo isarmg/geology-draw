@@ -1180,7 +1180,7 @@ def register_all():
                     raise ValueError(f"引用的内置花纹“{spec}”不存在")
                 pattern = None
             else:
-                pattern = L.build_spec_pattern(spec)
+                pattern = L.build_spec_pattern(spec, fixed_layer_rows=True)
             # 已有内置常用岩性优先，不覆盖；但上面仍完整
             # 校验它的国标 spec，避免“因同名而跳过完整性检查”。
             if name not in L.LITHOLOGY:
@@ -1254,11 +1254,9 @@ def render_catalog_sheet(category, ncols=4):
                 spec, face = spec_for(code, name), "#ffffff"
                 spec = spec[0]
                 L.paint(ax, verts, None, spec=spec, face=face,
-                        spacing=L.swatch_spacing_for_spec(
-                            L.normalize_spec(spec), sh))
+                        spacing=L.BASE_SPACING)
             else:
-                L.paint(ax, verts, name,
-                        spacing=L._swatch_spacing(name, sh))
+                L.paint(ax, verts, name, spacing=L.BASE_SPACING)
             ax.add_patch(Polygon(verts, closed=True, facecolor="none",
                                  edgecolor="#333333", lw=0.7, zorder=3))
             # 最长标准名称为 16 个汉字，两行即可完整容纳。旧实现超过

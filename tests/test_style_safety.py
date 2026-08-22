@@ -12,7 +12,7 @@ os.environ.setdefault("MPLCONFIGDIR", tempfile.gettempdir())
 
 from strat import lithology
 from ui.designer import save_style_entry
-from ui.state import ChartState
+from ui.state import ChartState, ValidationError
 from ui.window import MainWindow
 
 
@@ -92,6 +92,63 @@ class StyleFileSafetyTests(unittest.TestCase):
 
 
 class DesktopRevisionTests(unittest.TestCase):
+    def test_pattern_row_height_is_shared_by_both_chart_kinds(self):
+        interpreter = tk.Tcl()
+        state = ChartState(interpreter, on_change=lambda: None)
+        state.data = [{"lith": "砂岩", "thick": 1.0}]
+
+        state.kind = "column"
+        self.assertEqual(
+            state.render_kwargs()["pattern_row_height_mm"], 2.5)
+
+        state.pattern_row_height_mm.set("3.75")
+        self.assertEqual(
+            state.render_kwargs()["pattern_row_height_mm"], 3.75)
+
+        state.kind = "section"
+        self.assertEqual(
+            state.render_kwargs()["pattern_row_height_mm"], 3.75)
+
+    def test_pattern_row_height_does_not_leak_between_states(self):
+        interpreter = tk.Tcl()
+        first = ChartState(interpreter, on_change=lambda: None)
+        second = ChartState(interpreter, on_change=lambda: None)
+        first.kind = second.kind = "section"
+        first.pattern_row_height_mm.set("1.25")
+        second.pattern_row_height_mm.set("8.5")
+
+        self.assertEqual(
+            first.render_kwargs()["pattern_row_height_mm"], 1.25)
+        self.assertEqual(
+            second.render_kwargs()["pattern_row_height_mm"], 8.5)
+
+        first.pattern_row_height_mm.set("4")
+        self.assertEqual(
+            first.render_kwargs()["pattern_row_height_mm"], 4.0)
+        self.assertEqual(
+            second.render_kwargs()["pattern_row_height_mm"], 8.5)
+
+    def test_pattern_row_height_rejects_non_finite_and_out_of_range(self):
+        interpreter = tk.Tcl()
+        state = ChartState(interpreter, on_change=lambda: None)
+        state.kind = "section"
+
+        for value in ("", "abc", "nan", "inf", "-inf", "0.99", "10.01"):
+            with self.subTest(value=value):
+                state.pattern_row_height_mm.set(value)
+                with self.assertRaises(ValidationError) as caught:
+                    state.render_kwargs()
+                self.assertEqual(caught.exception.field,
+                                 "pattern_row_height_mm")
+
+        for value in ("1", "10"):
+            with self.subTest(value=value):
+                state.pattern_row_height_mm.set(value)
+                self.assertEqual(
+                    state.render_kwargs()["pattern_row_height_mm"],
+                    float(value),
+                )
+
     def test_desktop_can_hide_all_stratigraphic_categories(self):
         interpreter = tk.Tcl()
         state = ChartState(interpreter, on_change=lambda: None)

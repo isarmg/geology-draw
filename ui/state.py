@@ -11,6 +11,8 @@ from strat import parse_column, parse_section, read_table
 from strat import fonts as strat_fonts
 from strat.column import STRATA_CATS, WIDTH_LIMITS, resolve_page, \
     resolve_widths, available_unit_columns
+from strat.lithology import (PATTERN_ROW_HEIGHT_MM,
+                             resolve_pattern_row_height_mm)
 from strat.tableio import get as cell
 
 AUTO_FONT = "（自动）"
@@ -74,6 +76,8 @@ class ChartState:
         self.scale = v_str(root)              # 空 = 自动
         self.font = v_str(root, value=AUTO_FONT)
         self.font_size = v_str(root, value=f"{strat_fonts.BASE_FS:g}")
+        self.pattern_row_height_mm = v_str(
+            root, value=f"{PATTERN_ROW_HEIGHT_MM:g}")
         # 内容（柱状图）
         self.thick_mode = v_str(root, value="group")
         self.show_remark = v_bool(root, value=True)
@@ -158,6 +162,14 @@ class ChartState:
             raise ValidationError("font_size", "字号应在 6–12 pt 之间")
         return v
 
+    def _parse_pattern_row_height_mm(self):
+        s = self.pattern_row_height_mm.get().strip()
+        try:
+            return resolve_pattern_row_height_mm(s)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "pattern_row_height_mm", str(exc)) from None
+
     def _parse_page(self):
         page = self.page.get().strip() or "A4"
         try:
@@ -202,9 +214,11 @@ class ChartState:
 
     def render_kwargs(self):
         """算出传给 render_* 的参数；不合法则抛 ValidationError。"""
+        pattern_row_height_mm = self._parse_pattern_row_height_mm()
         if self.kind == "section":
             return {"title": self.title.get().strip() or "地层剖面图",
-                    "ve": self._parse_ve()}
+                    "ve": self._parse_ve(),
+                    "pattern_row_height_mm": pattern_row_height_mm}
         chosen = {k for k, v in self.strata.items() if v.get()}
         hidden = {h for h, v in self.hide_units.items() if not v.get()}
         return {
@@ -219,4 +233,5 @@ class ChartState:
             "show_remark": None if self.show_remark.get() else False,
             "hide_units": hidden or None,
             "show_legend": self.show_legend.get(),
+            "pattern_row_height_mm": pattern_row_height_mm,
         }

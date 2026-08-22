@@ -9,8 +9,9 @@
 也兼容旧格式的"地层单位"单列。"备注"整列为空时不显示该栏。
 "接触关系"指该层与下伏层的接触：写"平行不整合"或"角度不整合"时，
 该层底界在柱状图栏内画波状线（角度不整合另加短斜线）。
-"压缩"列填"是"时，若该层图上过高则自动压缩显示（中部画折断符号），
-厚度栏仍标真实厚度——地质柱状图对厚层的标准表示法。
+"压缩"列填"是"时，该层成为允许省略的候选；仅在图身空间不足时按需
+压缩显示（中部画折断符号），厚度栏仍标真实厚度——地质柱状图对厚层
+的标准表示法。
 """
 
 import math
@@ -57,10 +58,11 @@ _UNIT_HEAD = {k: head for k, head, _ in _UNIT_LEVELS}
 _FRAME = "#222222"   # 表格线色
 CM = 2.54            # 每英寸厘米数
 
-# 厚层压缩显示：被标记压缩且图上高度超过 TRIGGER 的层，岩性柱段压到 CAP，
-# 中部画折断符号，厚度栏仍标真实值（地质柱状图标准表示法）。
-COMPRESS_TRIGGER_IN = 1.6   # 图上高度阈值（英寸），达到才压缩
-COMPRESS_CAP_IN = 0.95      # 压缩后岩性柱段固定高度（英寸）
+# 厚层压缩显示：被标记的厚层只是“允许压缩”的候选。仅当自然柱高超过
+# 当前版面可用高度时才按需缩短，中部画折断符号；未标记层始终保持比例尺，
+# 厚度栏仍标真实值（地质柱状图标准表示法）。
+COMPRESS_TRIGGER_IN = 1.6   # 图上高度阈值（英寸），超过才允许压缩
+COMPRESS_CAP_IN = 0.95      # 自适应压缩后的最小显示高度（英寸）
 _COMPRESS_YES = {"是", "压缩", "y", "yes", "true", "1", "√", "✓", "t"}
 
 
@@ -68,19 +70,60 @@ def _is_compress(ly):
     return (ly.get("compress") or "").strip().lower() in _COMPRESS_YES
 
 
-def _display_heights(layers, inch_per_m):
-    """返回 (disp_in, compressed)：各层在图上的显示高度（英寸）与是否压缩。
-    压缩层显示高度取 CAP，其余为真实厚度按比例尺换算的高度。"""
-    disp, comp = [], []
-    for ly in layers:
-        real = ly["thick"] * inch_per_m
-        if _is_compress(ly) and real > COMPRESS_TRIGGER_IN:
-            disp.append(COMPRESS_CAP_IN)
-            comp.append(True)
-        else:
-            disp.append(real)
-            comp.append(False)
-    return disp, comp
+def _display_heights(layers, inch_per_m, target_in):
+    """按版面缺口自适应压缩，返回 ``(显示高度, 是否实际压缩)``。
+
+    ``target_in`` 是当前版式无需继续增长时可容纳的图身高度。自然柱高不
+    超过它时完全不压缩；超过时只从显式标记且自然图高超过触发阈值的层中
+    扣除所需高度。多个候选按各自可压缩量同比分摊，最低保留
+    ``COMPRESS_CAP_IN``，因此不会改变任何未标记层的比例，也不会因固定
+    压到下限而在柱底制造空白。
+    """
+    if isinstance(target_in, bool):
+        raise ValueError("厚层压缩目标高度必须是大于 0 的有限数")
+    try:
+        target = float(target_in)
+    except (TypeError, ValueError):
+        raise ValueError("厚层压缩目标高度必须是大于 0 的有限数")
+    if not math.isfinite(target) or target <= 0:
+        raise ValueError("厚层压缩目标高度必须是大于 0 的有限数")
+
+    natural = [ly["thick"] * inch_per_m for ly in layers]
+    if not all(math.isfinite(value) and value > 0 for value in natural):
+        raise ValueError("按当前比例尺计算的地层总高度过大")
+    capacities = [
+        max(real - COMPRESS_CAP_IN, 0.0)
+        if _is_compress(ly) and real > COMPRESS_TRIGGER_IN else 0.0
+        for ly, real in zip(layers, natural)
+    ]
+    try:
+        natural_total = math.fsum(natural)
+        available = math.fsum(capacities)
+    except OverflowError:
+        raise ValueError("按当前比例尺计算的地层总高度过大") from None
+    required = max(natural_total - target, 0.0)
+    eps = 1e-9 * max(natural_total, target, 1.0)
+    if required <= eps or available <= eps:
+        return natural, [False] * len(layers)
+
+    ratio = min(required / available, 1.0)
+    displayed = [real - capacity * ratio
+                 for real, capacity in zip(natural, capacities)]
+    # 可行时把浮点余差交给最后一个候选，保证柱底与目标线严格重合。
+    if ratio < 1.0:
+        candidates = [index for index, capacity in enumerate(capacities)
+                      if capacity > eps]
+        if candidates:
+            delta = math.fsum(displayed) - target
+            index = candidates[-1]
+            displayed[index] = min(
+                natural[index],
+                max(natural[index] - capacities[index],
+                    displayed[index] - delta),
+            )
+    compressed = [real - shown > eps
+                  for real, shown in zip(natural, displayed)]
+    return displayed, compressed
 
 # ---------------------------------------------------------------------------
 # 页面尺寸（厘米，纵向 宽×高）；landscape=True 时交换宽高。
@@ -135,12 +178,12 @@ WIDTH_LIMITS = {          # 栏名: (最小cm, 最大cm)
     "连接带":   (0.2, 1.2),   # 岩性柱两侧的折线连接带（默认版式）
     "柱状图":   (1.0, 8.0),
     "备注":     (0.8, 6.0),
-    "图例":     (2.0, 6.0),   # 右侧图例列（可选）
+    "图例":     (3.0, 6.0),   # 图底单个图例项的目标宽度（可选）
 }
 DESC_MIN_CM = 1.5         # 描述栏（余量）最小宽度（厘米）
 
 _DEFAULT_CM = {"地层单位": 2.2, "厚度": 1.2, "连接带": 0.6, "备注": 2.7,
-               "图例": 3.2}
+               "图例": 3.6}
 
 _KEY2NAME = {"unit": "地层单位", "thick": "厚度", "gutl": "连接带",
              "gutr": "连接带", "log": "柱状图", "remark": "备注",
@@ -154,8 +197,7 @@ for _k, _head, _cat in _UNIT_LEVELS:
 
 
 def _auto_legend_width(widths, layers, show_legend, fontsize):
-    """用户没指定“图例”栏宽时，按最长岩性名自动取宽（仍受范围夹紧），
-    使名称一行放得下，不再溢出列边界。"""
+    """用户没指定图例项宽度时，按最长岩性名估算（仍受范围夹紧）。"""
     if not show_legend:
         return widths
     widths = dict(widths or {})
@@ -163,6 +205,31 @@ def _auto_legend_width(widths, layers, show_legend, fontsize):
         widths["图例"] = lithology.legend_col_cm(
             [ly["lith"] for ly in layers], fontsize)
     return widths
+
+
+def _legend_block_layout(widths, layers, show_legend, fontsize, avail_in):
+    """返回 ``(标准化宽度, 图例项宽英寸, 图例块高英寸)``。"""
+    widths = _auto_legend_width(widths, layers, show_legend, fontsize)
+    if not show_legend:
+        return widths, None, 0.0
+    unknown = []
+    for layer in layers:
+        name = layer["lith"]
+        if lithology.resolve(name) is None and name not in unknown:
+            unknown.append(name)
+    if unknown:
+        shown = "、".join(unknown[:5])
+        more = f"等 {len(unknown)} 项" if len(unknown) > 5 else ""
+        raise ValueError(
+            "无法生成 GB/T 958 花纹图例：以下岩性没有已定义的唯一花纹——"
+            f"{shown}{more}；请改用 GB/T 958 标准名称或在样式文件中定义花纹"
+        )
+    item_cm = resolve_widths(widths).get("图例", _DEFAULT_CM["图例"])
+    item_in = item_cm / CM
+    height_in = lithology.legend_height_in(
+        [ly["lith"] for ly in layers], avail_in, fontsize,
+        item_w_in=item_in)
+    return widths, item_in, height_in
 
 
 def resolve_widths(user):
@@ -342,6 +409,12 @@ def _normalize_render_layers(layers):
             raise ValueError(f"第 {index} 层厚度必须是大于 0 的有限数")
         layer["thick"] = thick
         result.append(layer)
+    try:
+        total = math.fsum(layer["thick"] for layer in result)
+    except OverflowError:
+        raise ValueError("地层总厚度必须是大于 0 的有限数") from None
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("地层总厚度必须是大于 0 的有限数")
     return result
 
 
@@ -473,7 +546,8 @@ def render_column(layers, title="综合地层柱状图", scale=None, page="A4",
                   landscape=False, to_scale=False, widths=None,
                   fig_width=None, thick_per_layer=False,
                   unit_vertical=False, strata=None, thick_mode=None,
-                  show_remark=None, hide_units=None, show_legend=False):
+                  show_remark=None, hide_units=None, show_legend=False,
+                  pattern_row_height_mm=lithology.PATTERN_ROW_HEIGHT_MM):
     """绘制柱状图，返回 matplotlib Figure。
 
     默认版式：岩性柱按比例尺绘制，其余各栏行高由文字内容决定（取各栏
@@ -486,8 +560,10 @@ def render_column(layers, title="综合地层柱状图", scale=None, page="A4",
     litho 岩石地层）；None（默认）时凡有数据的列都显示。
     hide_units: 单独隐藏的地层单位列集合（中文名如"统"、"段"）；
     在 strata 之上再细化到某一列。
-    show_legend: 在最右侧加"图例"列，按岩性出现顺序从上到下均匀
-    列出花纹图例（可选，与地层层界无关）。
+    show_legend: 在图底增加表 4 图版尺寸岩性图例块，按首次出现顺序紧凑排列；
+                 不挤占主表栏宽，样框和花纹毫米参数不会随项目数缩放。
+    pattern_row_height_mm: 内置层状岩性花纹的基础层厚（毫米，1–10）；
+                           地层变厚时增加重复层数，不拉伸单层。
     thick_mode: 厚度栏模式——'group'（默认，同组合并显示总厚度）、
     'layer'（逐层显示每种岩性厚度）、'depth'（改显示地层深度，在组交界处
     标注累计深度）。thick_per_layer=True 等价于 'layer'。
@@ -528,7 +604,10 @@ def render_column(layers, title="综合地层柱状图", scale=None, page="A4",
         page_w = fig_width_value
     args = (layers, title, scale, page_w, page_h, widths, thick_mode,
             unit_vertical, strata, show_remark, hide_units, show_legend)
-    return (_render_to_scale if to_scale else _render_staggered)(*args)
+    row_height = lithology.resolve_pattern_row_height_mm(
+        pattern_row_height_mm)
+    with lithology.pattern_row_height_scope(row_height):
+        return (_render_to_scale if to_scale else _render_staggered)(*args)
 
 
 def _unit_text(name, vertical):
@@ -647,38 +726,44 @@ def _render_to_scale(layers, title, scale, page_w, page_h, widths=None,
     unit_cols, grouped, has_remark = _unit_layout(layers, strata, hide_units)
     if show_remark is not None:  # 备注栏显示开关
         has_remark = bool(show_remark)
-    widths = _auto_legend_width(widths, layers, show_legend, bfs)
+    widths, legend_item_in, legend_h = _legend_block_layout(
+        widths, layers, show_legend, bfs, avail_in)
     cols = _build_cols(unit_cols, has_remark, widths, staggered=False,
                        table_w_cm=avail_in * CM,
                        thick_head="深度\n(m)" if depth_mode else "厚度\n(m)",
-                       has_legend=show_legend)
+                       has_legend=False)
     header_in = 0.60 if grouped else 0.52
-    page_body = max(3.0, page_h - m_top - m_bottom - header_in)
+    page_body = max(3.0, page_h - m_top - m_bottom - header_in - legend_h)
+
+    # 对齐版式的可用高度同时受页面和文字避让需求约束。显式比例尺也使用
+    # 同一目标，避免一经标记就把整根柱压得很短并导致正文无处排布。
+    def col_text_in(key, texts):
+        w = next(w for k, _, w in cols if k == key) * avail_in - 0.15
+        return (sum(_est_lines(t, w, bfs) * (bfs / 72 * 1.55)
+                    for t in texts if t)
+                + 0.045 * (len(layers) - 1))
+
+    need = col_text_in("desc", [ly["desc"] or ly["lith"] for ly in layers])
+    if has_remark:
+        need = max(need, col_text_in("remark", [ly["remark"] for ly in layers]))
+    target_body = max(page_body, need * 1.06)
 
     nice = (10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500,
             600, 750, 1000, 1250, 1500, 2000, 2500, 3000, 4000, 5000)
     if not scale:
         # 自动：图身高度取"页面可用高度"与"文字放得下"二者较大者，
         # 比例尺取整到常用值
-        def col_text_in(key, texts):
-            w = next(w for k, _, w in cols if k == key) * avail_in - 0.15
-            return (sum(_est_lines(t, w, bfs) * (bfs / 72 * 1.55)
-                        for t in texts if t)
-                    + 0.045 * (len(layers) - 1))
-
-        need = col_text_in("desc", [ly["desc"] or ly["lith"] for ly in layers])
-        if has_remark:
-            need = max(need, col_text_in("remark", [ly["remark"] for ly in layers]))
-        body = max(page_body, need * 1.06)
+        body = target_body
         raw = 39.37 * total / body
         if body > page_body:  # 文字驱动：分母只能取小（图幅放大），确保放得下
-            scale = next((s for s in reversed(nice) if s <= raw * 1.02),
+            scale = next((s for s in reversed(nice) if s <= raw),
                          max(1, round(raw)))
         else:
-            scale = next((s for s in nice if s >= raw * 0.98), round(raw))
+            scale = next((s for s in nice if s >= raw), round(raw))
     inch_per_m = 39.37 / scale
-    # 显示坐标：压缩层在图上只占 CAP 高度，其余按比例；纵坐标用"米当量"
-    disp_in, comp = _display_heights(layers, inch_per_m)
+    # 显示坐标：只有自然柱高超过实际可用高度时才按需压缩候选厚层；
+    # 纵坐标用“米当量”，厚度/深度标注仍取真实值。
+    disp_in, comp = _display_heights(layers, inch_per_m, target_body)
     disp_m = [d / inch_per_m for d in disp_in]
     disp_bounds = [0.0]
     for dm in disp_m:
@@ -688,12 +773,12 @@ def _render_to_scale(layers, title, scale, page_w, page_h, widths=None,
         real_bounds.append(real_bounds[-1] + ly["thick"])
     disp_total = disp_bounds[-1]
     body_in = sum(disp_in)
-    fig_h = m_top + header_in + body_in + m_bottom
+    fig_h = m_top + header_in + body_in + legend_h + m_bottom
 
     fig = Figure(figsize=(fig_width, fig_h), dpi=100)
     fig.patch.set_facecolor("white")
 
-    ax = fig.add_axes([m_left / fig_width, m_bottom / fig_h,
+    ax = fig.add_axes([m_left / fig_width, (m_bottom + legend_h) / fig_h,
                        1 - (m_left + m_right) / fig_width,
                        (header_in + body_in) / fig_h])
     ax.axis("off")
@@ -744,14 +829,19 @@ def _render_to_scale(layers, title, scale, page_w, page_h, widths=None,
         if comp[i]:
             lithology.draw_break(ax, lx0, lx1, (d0 + d1) / 2)
 
-        # 岩性柱内层间线；不整合面画波状线
+        # 岩性柱内层间线；接触线下的白色隔离描边避免与花纹混线。
         if d1 < disp_total:
-            unconf, angular = lithology.is_unconformity(ly["contact"])
-            if unconf:
-                lithology.draw_wavy(ax, [(lx0, d1), (lx1, d1)], color=_FRAME,
-                                    lw=0.9, ticks=angular)
-            else:
-                ax.plot([lx0, lx1], [d1, d1], color=_FRAME, lw=0.7)
+            unconf, _angular = lithology.is_unconformity(ly["contact"])
+            lithology.draw_contact(
+                ax,
+                [(lx0, d1), (lx1, d1)],
+                ly["contact"],
+                color=_FRAME,
+                lw=0.9 if unconf else 0.7,
+                clearance_mm=lithology.contact_clearance_mm(
+                    disp_in[i:i + 2]
+                ),
+            )
 
     # 厚度/深度栏（文字为真实值，位置用显示坐标）
     spans = _thick_spans(layers, [] if thick_mode == "layer" else unit_cols)
@@ -805,23 +895,26 @@ def _render_to_scale(layers, title, scale, page_w, page_h, widths=None,
                         va="center", fontsize=bfs + 0.5,
                         linespacing=1.15 if unit_vertical else 1.5)
 
-    # 图例列：按岩性出现顺序从上到下均匀排列（与层界无关）
-    if show_legend and "legend" in edge:
-        lithology.draw_legend_column(ax, edge["legend"][0], edge["legend"][1],
-                                     0.0, disp_total,
-                                     [ly["lith"] for ly in layers], bfs)
-
     # 竖向表格线与外框（段内分隔线从表头下半段起，类别段边界整高）
     for i, x in enumerate(xs[1:-1], 1):
         if grouped and i < n_unit:
             top = -header_m if i in seg_bounds else -header_m / 2
         else:
             top = -header_m
-        ax.plot([x, x], [top, disp_total], color=_FRAME, lw=0.7)
+        ax.plot([x, x], [top, disp_total], color=_FRAME, lw=0.7,
+                zorder=5)
     for x in (0, 1):
-        ax.plot([x, x], [-header_m, disp_total], color=_FRAME, lw=1.4)
+        ax.plot([x, x], [-header_m, disp_total], color=_FRAME, lw=1.4,
+                zorder=5)
     for y in (-header_m, disp_total):
-        ax.plot([0, 1], [y, y], color=_FRAME, lw=1.4)
+        ax.plot([0, 1], [y, y], color=_FRAME, lw=1.4, zorder=5)
+
+    if show_legend:
+        lithology.draw_legend(
+            fig, [ly["lith"] for ly in layers],
+            [m_left / fig_width, m_bottom / fig_h,
+             avail_in / fig_width, legend_h / fig_h],
+            fontsize=bfs, item_w_in=legend_item_in)
 
     notes = []
     if any(lithology.is_unconformity(ly["contact"])[0] for ly in layers):
@@ -855,13 +948,14 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
     unit_cols, grouped, has_remark = _unit_layout(layers, strata, hide_units)
     if show_remark is not None:  # 备注栏显示开关
         has_remark = bool(show_remark)
-    widths = _auto_legend_width(widths, layers, show_legend, bfs)
+    widths, legend_item_in, legend_h = _legend_block_layout(
+        widths, layers, show_legend, bfs, avail_in)
     cols = _build_cols(unit_cols, has_remark, widths, staggered=True,
                        table_w_cm=avail_in * CM,
                        thick_head="深度\n(m)" if depth_mode else "厚度\n(m)",
-                       has_legend=show_legend)
+                       has_legend=False)
     header_in = 0.60 if grouped else 0.52
-    page_body = max(3.0, page_h - m_top - m_bottom - header_in)
+    page_body = max(3.0, page_h - m_top - m_bottom - header_in - legend_h)
 
     # 行高：由描述/备注文字行数决定（取两者较大者）
     fs = bfs
@@ -884,15 +978,17 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
         # 自动：在"文字放得下"（分母上限）内尽量贴合页面可用高度
         raw_table = 39.37 * total_m / h_table
         raw_page = 39.37 * total_m / page_body
-        scale = next((s for s in nice if raw_page * 0.98 <= s <= raw_table),
+        scale = next((s for s in nice if raw_page <= s <= raw_table),
                      None)
         if scale is None:  # 页面装不下文字：以文字为准（图会超出页高）
             scale = next((s for s in reversed(nice) if s <= raw_table),
                          None) or max(1, int(raw_table))
     inch_per_m = 39.37 / scale
-    disp_in, comp = _display_heights(layers, inch_per_m)
-    # 未压缩层始终严格使用 inch_per_m。压缩厚层可能使岩性柱短于文字
-    # 表格，此时由连接带吸收高度差，不能拉伸其余层后仍标注原比例尺。
+    # 页面能容纳自然柱时不省略；确实超出页面/文字表格所需高度时，只从
+    # 标记候选层扣除恰好需要的高度。未压缩层始终严格使用 inch_per_m。
+    target_body = max(page_body, h_table)
+    disp_in, comp = _display_heights(
+        layers, inch_per_m, target_body)
     h_log = sum(disp_in)
     if h_log > h_table:  # 拉伸行距，使表格底与岩性柱底对齐
         k = h_log / h_table
@@ -907,10 +1003,10 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
     for d in disp_in:
         l_bounds.append(l_bounds[-1] + d)
 
-    fig_h = m_top + header_in + height + m_bottom
+    fig_h = m_top + header_in + height + legend_h + m_bottom
     fig = Figure(figsize=(fig_width, fig_h), dpi=100)
     fig.patch.set_facecolor("white")
-    ax = fig.add_axes([m_left / fig_width, m_bottom / fig_h,
+    ax = fig.add_axes([m_left / fig_width, (m_bottom + legend_h) / fig_h,
                        1 - (m_left + m_right) / fig_width,
                        (header_in + height) / fig_h])
     ax.axis("off")
@@ -960,9 +1056,9 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
                 ax.text(edge[key][0] + pad, y, ln, ha="left", va="center",
                         fontsize=fs)
                 y += line_in
-        if i < n - 1:  # 行分隔线（描述/备注列；不进入图例列，图例列内无横线）
-            right = edge["legend"][0] if "legend" in edge else 1.0
-            ax.plot([edge["desc"][0], right], [r1, r1], color=_FRAME, lw=0.7)
+        if i < n - 1:
+            ax.plot([edge["desc"][0], 1.0], [r1, r1],
+                    color=_FRAME, lw=0.7)
 
     # 厚度/深度栏
     spans = _thick_spans(layers, [] if thick_mode == "layer" else unit_cols)
@@ -997,14 +1093,21 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
                         ly["lith"])
         if comp[i]:
             lithology.draw_break(ax, lx0, lx1, (d0 + d1) / 2)
-        unconf, angular = lithology.is_unconformity(ly["contact"])
-        if unconf:
-            lithology.draw_wavy(ax, [(lx0, d1), (lx1, d1)], color=_FRAME,
-                                lw=0.9, ticks=angular)
-        elif i < n - 1 or d1 < height - 1e-6:
-            ax.plot([lx0, lx1], [d1, d1], color=_FRAME, lw=0.7)
+        unconf, _angular = lithology.is_unconformity(ly["contact"])
+        if unconf or i < n - 1 or d1 < height - 1e-6:
+            lithology.draw_contact(
+                ax,
+                [(lx0, d1), (lx1, d1)],
+                ly["contact"],
+                color=_FRAME,
+                lw=0.9 if unconf else 0.7,
+                clearance_mm=lithology.contact_clearance_mm(
+                    disp_in[i:i + 2]
+                ),
+            )
     for x in (lx0, lx1):  # 岩性柱左右边线
-        ax.plot([x, x], [0, l_bounds[-1]], color=_FRAME, lw=0.8)
+        ax.plot([x, x], [0, l_bounds[-1]], color=_FRAME, lw=0.8,
+                zorder=5)
 
     # 两侧连接折线：表格行界 <-> 岩性柱层界
     for j in range(1, n + 1):
@@ -1033,12 +1136,6 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
                         va="center", fontsize=bfs + 0.5,
                         linespacing=1.15 if unit_vertical else 1.5)
 
-    # 图例列：按岩性出现顺序从上到下均匀排列（与层界无关）
-    if show_legend and "legend" in edge:
-        lithology.draw_legend_column(ax, edge["legend"][0], edge["legend"][1],
-                                     0.0, height,
-                                     [ly["lith"] for ly in layers], bfs)
-
     # 竖向表格线与外框（跳过岩性柱两侧内边；类别段边界整高、段内从中线起）
     for i, x in enumerate(xs[1:-1], 1):
         if cols[i - 1][0] == "log" or cols[i][0] == "log":
@@ -1047,11 +1144,19 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
             top = -header_in if i in seg_bounds else -header_in / 2
         else:
             top = -header_in
-        ax.plot([x, x], [top, height], color=_FRAME, lw=0.7)
+        ax.plot([x, x], [top, height], color=_FRAME, lw=0.7, zorder=5)
     for x in (0, 1):
-        ax.plot([x, x], [-header_in, height], color=_FRAME, lw=1.4)
+        ax.plot([x, x], [-header_in, height], color=_FRAME, lw=1.4,
+                zorder=5)
     for y in (-header_in, height):
-        ax.plot([0, 1], [y, y], color=_FRAME, lw=1.4)
+        ax.plot([0, 1], [y, y], color=_FRAME, lw=1.4, zorder=5)
+
+    if show_legend:
+        lithology.draw_legend(
+            fig, [ly["lith"] for ly in layers],
+            [m_left / fig_width, m_bottom / fig_h,
+             avail_in / fig_width, legend_h / fig_h],
+            fontsize=bfs, item_w_in=legend_item_in)
 
     if any(lithology.is_unconformity(ly["contact"])[0] for ly in layers):
         fig.text(m_left / fig_width, 0.14 / fig_h,

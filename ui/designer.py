@@ -285,7 +285,8 @@ class DesignerPanel(ScrollFrame):
                                         edgecolor=self.theme.c["border_hi"],
                                         lw=0.8))
 
-        # 右：图例小样（18×12 mm；瓦片过高时自动收紧到整瓦片）
+        # 右：图例小样（18×12 mm）；与主图使用同一物理节距，
+        # 样框只裁剪花纹，不会为显示整个瓦片而压缩单层。
         sw, sh = 0.71, 0.472
         ax2 = self._fig.add_axes([0.07 + (w1 + 0.18) / fw,
                                   (fh - h1) / 2 / fh + (h1 - sh) / fh,
@@ -294,9 +295,8 @@ class DesignerPanel(ScrollFrame):
         ax2.set_ylim(sh, 0)
         ax2.axis("off")
         try:
-            sp = L.swatch_spacing_for_spec(L.normalize_spec(spec), sh)
             L.paint(ax2, [(0, 0), (sw, 0), (sw, sh), (0, sh)], "__preview__",
-                    spec=spec, face=face, spacing=sp)
+                    spec=spec, face=face, spacing=L.BASE_SPACING)
         except Exception:
             pass
         ax2.add_patch(mpatches.Rectangle((0, 0), sw, sh, fill=False,

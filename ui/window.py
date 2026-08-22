@@ -552,7 +552,7 @@ class MainWindow(tk.Tk):
             ("关于",
              "地层绘图 · 基于 Python + matplotlib\n"
              "内置 90 余种岩性花纹与成分修饰自动组合，支持自定义样式、\n"
-             "厚层压缩、图例列、多种页面与字体；可导出 PNG / PDF / SVG。"),
+             "厚层压缩、图底 GB/T 958 花纹图例、多种页面与字体；可导出 PNG / PDF / SVG。"),
         )
         for i, (title, text) in enumerate(blocks):
             ttk.Label(body, text=title, style="Section.TLabel").pack(

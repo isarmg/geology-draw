@@ -30,7 +30,19 @@ import matplotlib
 from strat import (load_column, render_column, load_section, render_section,
                    load_style, find_style_file, render_pattern_sheet)
 from strat import fonts as strat_fonts
-from strat.lithology import render_shapes_sheet
+from strat.lithology import (PATTERN_ROW_HEIGHT_LIMITS_MM,
+                             PATTERN_ROW_HEIGHT_MM,
+                             render_shapes_sheet,
+                             resolve_pattern_row_height_mm)
+
+
+def _pattern_row_height_arg(value):
+    """argparse adapter using the renderer's canonical validation rules."""
+    try:
+        return resolve_pattern_row_height_mm(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
 
 def _base_dir():
     if getattr(sys, "frozen", False):  # PyInstaller 打包后资源在临时解压目录
@@ -103,6 +115,9 @@ def run_cli(args):
     used = apply_style(getattr(args, "style", None), args.data)
     if used:
         print(f"已载入样式：{used}")
+    pattern_row_height_mm = resolve_pattern_row_height_mm(
+        getattr(args, "pattern_row_height_mm", PATTERN_ROW_HEIGHT_MM)
+    )
     if args.kind == "column":
         widths = {}
         for item in (args.width or []):
@@ -126,10 +141,16 @@ def run_cli(args):
                             show_remark=False if args.no_remark else None,
                             hide_units=set(args.hide_units)
                             if args.hide_units else None,
-                            show_legend=args.legend)
+                            show_legend=args.legend,
+                            pattern_row_height_mm=pattern_row_height_mm)
     else:
         holes = load_section(args.data)
-        fig = render_section(holes, title=args.title or "地层剖面图", ve=args.ve)
+        fig = render_section(
+            holes,
+            title=args.title or "地层剖面图",
+            ve=args.ve,
+            pattern_row_height_mm=pattern_row_height_mm,
+        )
     out = args.output or (os.path.splitext(args.data)[0] + ".png")
     fig.savefig(out, dpi=args.dpi, facecolor="white")
     print(f"已保存：{out}")
@@ -185,6 +206,15 @@ def main():
                         "楷体/微软雅黑/等线/华文楷体…，也可用族名如 SimHei")
         sp.add_argument("--font-size", type=float,
                         help="正文基准字号 pt（6–12，默认 8）")
+        row_min, row_max = PATTERN_ROW_HEIGHT_LIMITS_MM
+        sp.add_argument(
+            "--pattern-row-height-mm",
+            type=_pattern_row_height_arg,
+            default=PATTERN_ROW_HEIGHT_MM,
+            metavar="MM",
+            help=(f"岩性花纹基础层高（毫米，{row_min:g}–{row_max:g}，"
+                  f"默认 {PATTERN_ROW_HEIGHT_MM:g}）"),
+        )
         if kind == "column":
             sp.add_argument("--scale", type=int,
                             help="垂直比例尺分母，如 200 表示 1:200")
@@ -209,7 +239,7 @@ def main():
             sp.add_argument("--no-remark", action="store_true",
                             help="隐藏备注栏（即使数据里有备注）")
             sp.add_argument("--legend", action="store_true",
-                            help="在最右侧加图例列（按岩性出现顺序排列）")
+                            help="在图底加 GB/T 958 花纹岩性图例（按首次出现顺序排列）")
             sp.add_argument("--hide-units", nargs="+", metavar="列名",
                             help="单独隐藏某些地层单位列（中文名，如 统 段），"
                                  "在 --strata 之上再细化到某一列")

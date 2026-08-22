@@ -132,9 +132,17 @@ class Inspector(ScrollFrame):
         self._font_cb.bind("<<ComboboxSelected>>",
                            lambda _e: self.actions.rerender())
 
-        row = field_row(b, t, "字号", label_w=_LBL, pady=0)
+        row = field_row(b, t, "字号", label_w=_LBL)
         self._entry(row, self.state.font_size, width=7).pack(side=tk.LEFT)
         ttk.Label(row, text="pt（6–12）", style="Hint.TLabel").pack(
+            side=tk.LEFT, padx=(t.px(6), 0))
+
+        # 花纹层厚同时影响柱状图、剖面图及其图例，因此不能
+        # 放进只在柱状图中显示的 _page_rows。
+        row = field_row(b, t, "花纹层厚", label_w=_LBL, pady=0)
+        self._entry(row, self.state.pattern_row_height_mm, width=7).pack(
+            side=tk.LEFT)
+        ttk.Label(row, text="mm（1–10，默认 2.5）", style="Hint.TLabel").pack(
             side=tk.LEFT, padx=(t.px(6), 0))
 
     def _build_content(self):
@@ -153,7 +161,7 @@ class Inspector(ScrollFrame):
         box = ttk.Frame(b, style="Surface.TFrame")
         box.pack(fill=tk.X, pady=(t.px(2), t.px(10)))
         for text, var in (("备注栏", self.state.show_remark),
-                          ("图例列", self.state.show_legend)):
+                          ("岩性图例（GB/T 958 花纹）", self.state.show_legend)):
             ttk.Checkbutton(box, text=text, variable=var,
                             style="Panel.TCheckbutton").pack(anchor="w")
 
@@ -172,12 +180,14 @@ class Inspector(ScrollFrame):
     def _build_widths(self):
         sec = self._add("widths", "栏宽", collapsed=True,
                         hint="单位厘米，留空用默认值；超范围自动夹紧。"
-                             "“岩性描述”栏为其余各栏的余量，不单独设置。")
+                             "“岩性描述”栏为其余各栏的余量；“图例”表示"
+                             "图底每个图例项的目标宽度。")
         ttk.Button(sec.head_actions, text="恢复默认", style="Soft.TButton",
                    command=self._reset_widths).pack()
         b, t = sec.body, self.theme
         for name, (lo, hi) in WIDTH_LIMITS.items():
-            row = field_row(b, t, name, label_w=9)
+            label = "图例项" if name == "图例" else name
+            row = field_row(b, t, label, label_w=9)
             self._entry(row, self.state.widths[name], width=6).pack(
                 side=tk.LEFT)
             ttk.Label(row, text=f"{lo:g}–{hi:g}", style="Hint.TLabel").pack(

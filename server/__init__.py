@@ -652,7 +652,7 @@ def _validate_render_request(payload, kind):
         raise APIError(HTTPStatus.UNPROCESSABLE_ENTITY, "invalid_options",
                        "options 必须是 JSON 对象")
 
-    common = {"title", "font", "font_size"}
+    common = {"title", "font", "font_size", "pattern_row_height_mm"}
     column_only = {"page", "landscape", "scale", "to_scale", "thick_mode",
                    "show_remark", "show_legend", "unit_vertical", "strata",
                    "hide_units", "widths"}
@@ -667,8 +667,15 @@ def _validate_render_request(payload, kind):
     font_value = options.get("font")
     font = None if font_value is None else _short_text(font_value, "font", 100)
     font_size = _number(options.get("font_size", 8.0), "font_size", 6, 12)
+    row_min, row_max = lithology.PATTERN_ROW_HEIGHT_LIMITS_MM
+    pattern_row_height_mm = _number(
+        options.get("pattern_row_height_mm", lithology.PATTERN_ROW_HEIGHT_MM),
+        "pattern_row_height_mm", row_min, row_max)
 
-    render_options = {"title": title}
+    render_options = {
+        "title": title,
+        "pattern_row_height_mm": pattern_row_height_mm,
+    }
     if kind == "section":
         render_options["ve"] = _number(options.get("ve"), "ve", 0.1, 50,
                                         nullable=True)
@@ -931,6 +938,13 @@ def _capabilities(repository=None):
             "thick_modes": ["group", "layer", "depth"],
             "strata": list(STRATA_CATS),
             "fonts": fonts,
+            "pattern_row_height_mm": {
+                "min": lithology.PATTERN_ROW_HEIGHT_LIMITS_MM[0],
+                "max": lithology.PATTERN_ROW_HEIGHT_LIMITS_MM[1],
+                "default": lithology.PATTERN_ROW_HEIGHT_MM,
+                "step": 0.1,
+                "unit": "mm",
+            },
             "width_limits": {key: {"min": value[0], "max": value[1]}
                              for key, value in WIDTH_LIMITS.items()},
         },

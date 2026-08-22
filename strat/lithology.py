@@ -11,6 +11,9 @@
 import copy
 import json
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import lru_cache
 
 import numpy as np
 from matplotlib.patches import Polygon
@@ -21,6 +24,52 @@ INK = "#4a4438"
 
 # 花纹基准间距（英寸）：spacing 倍率为 1 时的疏密，越小越密
 BASE_SPACING = 0.09
+
+# 层理、砖纹、波纹和斜线带的统一基础层高。10 mm 标准图例框
+# 固定显示 4 个基础层；地层加厚只会增加重复层数，不会拉伸单层。
+PATTERN_ROW_HEIGHT_MM = 2.5
+PATTERN_ROW_HEIGHT_IN = PATTERN_ROW_HEIGHT_MM / 25.4
+PATTERN_ROW_HEIGHT_LIMITS_MM = (1.0, 10.0)
+
+# 单次绘图的层高不能写回 PATTERNS 或模块常量：Web 服务可能同时处理
+# 多个不同参数的导出。ContextVar 让深层 paint()/图例代码自动读取本次
+# 渲染值，并在异常退出时安全恢复。
+_PATTERN_ROW_HEIGHT_CONTEXT = ContextVar(
+    "pattern_row_height_mm", default=PATTERN_ROW_HEIGHT_MM)
+
+
+def resolve_pattern_row_height_mm(value=PATTERN_ROW_HEIGHT_MM):
+    """校验并返回花纹基础层高（毫米）。"""
+    low, high = PATTERN_ROW_HEIGHT_LIMITS_MM
+    if isinstance(value, bool):
+        raise ValueError(f"花纹层厚应为 {low:g}–{high:g} mm 之间的有限数")
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"花纹层厚应为 {low:g}–{high:g} mm 之间的有限数")
+    if not math.isfinite(resolved) or not low <= resolved <= high:
+        raise ValueError(f"花纹层厚应为 {low:g}–{high:g} mm 之间的有限数")
+    return resolved
+
+
+def current_pattern_row_height_mm():
+    """返回当前绘图上下文的花纹基础层高（毫米）。"""
+    return _PATTERN_ROW_HEIGHT_CONTEXT.get()
+
+
+@contextmanager
+def pattern_row_height_scope(value=PATTERN_ROW_HEIGHT_MM):
+    """在当前单次绘图中使用指定花纹层高，并保证退出后恢复。"""
+    token = _PATTERN_ROW_HEIGHT_CONTEXT.set(
+        resolve_pattern_row_height_mm(value))
+    try:
+        yield _PATTERN_ROW_HEIGHT_CONTEXT.get()
+    finally:
+        _PATTERN_ROW_HEIGHT_CONTEXT.reset(token)
+
+# 接触面与岩性花纹之间的最大单侧净空。接触线保持原有标准线宽；薄层会
+# 按图上高度自动收窄白色底衬，避免净空吞没花纹。
+CONTACT_CLEARANCE_MM = 0.35
 
 # 标准岩性名 -> (底色, 花纹)。底色遵循地质制图惯例：砂岩黄、灰岩蓝、
 # 泥岩绿灰、煤黑、花岗岩肉红等；同时每种岩性花纹唯一，色觉障碍或
@@ -1221,21 +1270,117 @@ def normalize_spec(spec, where="花纹"):
     return out
 
 
-def build_spec_pattern(spec):
+def _layer_carrier_spacing(el):
+    """返回会产生可见层带的图元纵向节距倍率。
+
+    纯竖线只控制横向密度，不是“一层”；显式 rows 花纹的各行
+    高度由用户定义，也不改写。
+    """
+    if not isinstance(el, dict):
+        return None
+    typ = el.get("type")
+    if typ == "lines":
+        angle = float(el.get("angle", 0.0)) % 180.0
+        if math.isclose(angle, 90.0, abs_tol=1e-9):
+            dash = float(el.get("dash", 0.0))
+            gap = float(el.get("gap", 0.0))
+            return dash + gap if dash > 0 and dash + gap > 0 else None
+        # spacing 是斜线族的法向间距；除以 cos(角度)
+        # 才是固定 x 位置上看到的纵向层高。
+        cosine = abs(math.cos(math.radians(angle)))
+        if cosine <= 1e-9:
+            return None
+        return float(el.get("spacing", 1.0)) / cosine
+    if typ in ("brick", "wave"):
+        return float(el.get("spacing", 1.0))
+    return None
+
+
+def _fixed_layer_row_spec(spec, row_height_mm=PATTERN_ROW_HEIGHT_MM):
+    """把一幅标准层状花纹的基础层高统一为指定毫米值。
+
+    复合花纹内稀疏符号与基础层的倍数关系保持不变；行内横向间距
+    保持原值，因此只增加纵向重复层数，不会把符号横向挤密。
+    """
+    carriers = [
+        value for value in (_layer_carrier_spacing(el) for el in spec)
+        if value is not None and value > 0
+    ]
+    if not carriers:
+        return copy.deepcopy(spec)
+    # spec 的首个层带图元是主图元；其余稀疏符号保持与它的
+    # 原始 1:n 重复关系。
+    row_height_in = resolve_pattern_row_height_mm(row_height_mm) / 25.4
+    factor = (row_height_in / BASE_SPACING) / carriers[0]
+    out = copy.deepcopy(spec)
+    for el in out:
+        if not isinstance(el, dict):
+            continue
+        typ = el.get("type")
+        if typ == "lines":
+            angle = float(el.get("angle", 0.0)) % 180.0
+            if math.isclose(angle, 90.0, abs_tol=1e-9):
+                if float(el.get("dash", 0.0)) > 0:
+                    el["dash"] = float(el.get("dash", 0.0)) * factor
+                    el["gap"] = float(el.get("gap", 0.0)) * factor
+                    el["phase"] = float(el.get("phase", 0.0)) * factor
+                continue
+        elif typ not in ("markers", "dots", "brick", "ell", "wave",
+                          "shape"):
+            continue
+        original = float(el.get("spacing", 1.0))
+        if typ in ("markers", "dots", "shape") and not el.get("xspacing"):
+            el["xspacing"] = original
+        el["spacing"] = original * factor
+    return out
+
+
+def _centered_pattern_phase(height, pitch):
+    """返回上下对称的剩余相位，并消除浮点整倍数取模误差。"""
+    if pitch <= 1e-9 or height <= 0:
+        return 0.0
+    ratio = height / pitch
+    if math.isclose(ratio, round(ratio), rel_tol=0.0, abs_tol=1e-9):
+        return 0.0
+    remainder = height - math.floor(ratio) * pitch
+    if math.isclose(remainder, pitch, rel_tol=0.0, abs_tol=1e-9):
+        remainder = 0.0
+    return remainder / 2
+
+
+def build_spec_pattern(spec, *, fixed_layer_rows=False):
     """把声明式花纹 spec（图元字典列表）编译成与内置花纹同签名的函数。
 
-    花纹以目标多边形包围盒的左上角为原点（局部锚定）：无论画在柱状图
-    单元格、剖面多边形还是图例小样里，看到的都是同一幅花纹，而不是
-    按坐标轴原点全局平铺后的任意一角。
+    花纹以目标多边形包围盒为局部坐标：层状/砖格式花纹保持固定物理节距，
+    并把不足一个完整节距的余量对称分配到上下边界，避免每层底部出现厚度
+    不一的窄残行。符号宽高和线宽不随多边形高度缩放。
     """
-    spec = normalize_spec(spec)
+    source_spec = normalize_spec(spec)
+    has_layer_carrier = any(
+        _layer_carrier_spacing(el) is not None for el in source_spec
+    )
+    uses_fixed_rows = bool(fixed_layer_rows and has_layer_carrier)
+
+    @lru_cache(maxsize=32)
+    def effective_variant(row_height_mm):
+        if uses_fixed_rows:
+            return (_fixed_layer_row_spec(source_spec, row_height_mm),
+                    row_height_mm / 25.4)
+        return source_spec, _vertical_pitch_in(source_spec)
+
+    default_spec, _default_pitch = effective_variant(PATTERN_ROW_HEIGHT_MM)
 
     def fn(x0, x1, y0, y1, dx, dy):
+        # 在真正绘制时读取请求级参数，避免模块导入阶段把 2.5 mm 永久
+        # 捕获进全局 PATTERNS。有限缓存避免同一张图的每层重复换算。
+        row_height_mm = current_pattern_row_height_mm()
+        active_spec, vertical_pitch = effective_variant(row_height_mm)
         sx, sy = dx / BASE_SPACING, dy / BASE_SPACING   # 单位英寸对应的数据跨度
         X0, Y0 = x0 / sx, y0 / sy                       # 包围盒原点（英寸）
         W, H = (x1 - x0) / sx, (y1 - y0) / sy           # 包围盒尺寸（英寸）
+        phase_y = _centered_pattern_phase(H, vertical_pitch)
         all_segs, all_marks, all_csegs = [], [], []
-        for el in spec:
+        for el in active_spec:
             prim = _PRIMS.get(el.get("type"))
             if not prim:
                 continue
@@ -1244,8 +1389,9 @@ def build_spec_pattern(spec):
             params = {k: v for k, v in el.items()
                       if k not in ("type", "color", "lw")}
             segs, marks = prim(0.0, W, 0.0, H, **params)
-            out = [[((a[0] + X0) * sx, (a[1] + Y0) * sy),
-                    ((b[0] + X0) * sx, (b[1] + Y0) * sy)] for a, b in segs]
+            out = [[((a[0] + X0) * sx, (a[1] + phase_y + Y0) * sy),
+                    ((b[0] + X0) * sx, (b[1] + phase_y + Y0) * sy)]
+                   for a, b in segs]
             if color or lw:
                 all_csegs.append((color, lw, out))
             else:
@@ -1253,10 +1399,18 @@ def build_spec_pattern(spec):
             for mx, my, mk, fl, *rest in marks:
                 sz = rest[0] if rest else 2.0
                 all_marks.append(([(x + X0) * sx for x in mx],
-                                  [(y + Y0) * sy for y in my], mk, fl, sz,
+                                  [(y + phase_y + Y0) * sy for y in my],
+                                  mk, fl, sz,
                                   color))
         return all_segs, all_marks, all_csegs
-    fn.spec = spec      # 供图例小样等按 spec 特征（如瓦片高）自适应
+    # 对外保留声明时的 spec，避免标准组合花纹再次编译时把已换算过的
+    # spacing 当作新的源参数；effective_spec 供调试和物理尺度测试查看。
+    fn.spec = source_spec
+    fn.effective_spec = default_spec
+    fn.effective_spec_for = lambda value: effective_variant(
+        resolve_pattern_row_height_mm(value))[0]
+    fn.source_spec = source_spec
+    fn.fixed_layer_rows = uses_fixed_rows
     return fn
 
 
@@ -1289,19 +1443,27 @@ def _row_pitch(spec):
     return r
 
 
-def swatch_spacing_for_spec(spec, sh_in, spacing=BASE_SPACING):
-    """图例小样的花纹间距。
-
-    - 行式瓦片（rows）比小样高时按比例收紧，让小样显示完整一个瓦片；
-    - 层理/砖形花纹按层带节距缩放，使小样恰好显示 **3 个完整等高
-      层带**（同标准图例样框的画法，各岩性小样行数、行高一致）；
-    - 其余花纹原样返回 spacing。"""
+def _vertical_pitch_in(spec):
+    """用于单元格上下余量居中的主要纵向重复节距（英寸）。"""
     tile = _tile_h_in(spec)
-    if tile > sh_in > 0:
-        return spacing * sh_in / tile
-    r = _row_pitch(spec)
-    if r > 0 and sh_in > 0:
-        return sh_in / (3 * r)
+    if tile > 0:
+        return tile
+    pitch = 0.0
+    for el in spec or []:
+        if not isinstance(el, dict):
+            continue
+        typ = el.get("type")
+        if typ == "lines" and el.get("angle", 0) % 180 != 0:
+            continue
+        if typ in ("lines", "markers", "dots", "brick", "ell", "wave",
+                   "shape"):
+            value = float(el.get("spacing", 1.0))
+            pitch = value if pitch <= 0 else min(pitch, value)
+    return pitch * BASE_SPACING
+
+
+def swatch_spacing_for_spec(spec, sh_in, spacing=BASE_SPACING):
+    """小样与主图使用同一物理节距；框高只负责裁剪，不缩放花纹。"""
     return spacing
 
 
@@ -1654,7 +1816,8 @@ _BUILTIN_SPECS = {
     "gneiss":     [{"type": "wave", "spacing": 2.2, "amp": 0.18,
                     "wavelength": 2.8},
                    {"type": "wave", "spacing": 2.2, "amp": 0.18,
-                    "wavelength": 2.8, "yoff": 2.5, "dash": 7, "gap": 4}],
+                    # 固定 2.5 mm 基础层高的一半：虚、实波线隔层相间。
+                    "wavelength": 2.8, "yoff": 1.25, "dash": 7, "gap": 4}],
     # 石英岩=波状线+细点散布（RPMR011536）
     "quartzite":  [{"type": "wave", "spacing": 2.2, "amp": 0.14,
                     "wavelength": 2.8},
@@ -1729,7 +1892,7 @@ _BUILTIN_SPECS = {
                     "spacing": 2.2, "stagger": False, "xoff": 0.5}],
 }
 for _name, _spec in _BUILTIN_SPECS.items():
-    PATTERNS[_name] = build_spec_pattern(_spec)
+    PATTERNS[_name] = build_spec_pattern(_spec, fixed_layer_rows=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1788,7 +1951,7 @@ def _norm3(res):
 
 def _composite_pattern(base_patt, overlay_spec):
     base_fn = PATTERNS.get(base_patt) if base_patt else None
-    ov_fn = build_spec_pattern(overlay_spec)
+    ov_fn = build_spec_pattern(overlay_spec, fixed_layer_rows=True)
     def fn(x0, x1, y0, y1, dx, dy):
         segs, marks, csegs = [], [], []
         if base_fn:
@@ -1799,6 +1962,15 @@ def _composite_pattern(base_patt, overlay_spec):
     # 合并 spec：小样按层带节距自适应（3 行等高）时能识别基岩层理
     base_spec = list(getattr(base_fn, "spec", []) or [])
     fn.spec = base_spec + list(ov_fn.spec)
+    fn.source_spec = fn.spec
+    fn.effective_spec = (
+        list(getattr(base_fn, "effective_spec", base_spec) or [])
+        + list(ov_fn.effective_spec)
+    )
+    fn.fixed_layer_rows = bool(
+        getattr(base_fn, "fixed_layer_rows", False)
+        or ov_fn.fixed_layer_rows
+    )
     return fn
 
 
@@ -1901,8 +2073,53 @@ def paint(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
     return poly
 
 
+def _draw_cased_line(ax, xs, ys, color, lw, zorder, clearance_mm,
+                     background, capstyle, joinstyle="round"):
+    """先画白色底衬再画墨线；两种 zorder 保证分段拼接处不会互相擦除。"""
+    clearance_pt = max(0.0, float(clearance_mm)) * 72.0 / 25.4
+    common = dict(
+        solid_capstyle=capstyle,
+        solid_joinstyle=joinstyle,
+    )
+    (underlay,) = ax.plot(
+        xs,
+        ys,
+        color=background,
+        lw=float(lw) + 2 * clearance_pt,
+        zorder=zorder,
+        **common,
+    )
+    (line,) = ax.plot(
+        xs,
+        ys,
+        color=color,
+        lw=lw,
+        zorder=zorder + 1,
+        **common,
+    )
+    return [underlay, line]
+
+
+def contact_clearance_mm(layer_heights_in, maximum=CONTACT_CLEARANCE_MM,
+                         fraction=0.10, minimum=0.08):
+    """按相邻层最小图上高度限制净空，避免白色底衬吞没薄层花纹。"""
+    heights = []
+    for height in layer_heights_in:
+        try:
+            value = float(height)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            heights.append(value)
+    if not heights:
+        return float(maximum)
+    thin_mm = min(heights) * 25.4
+    return min(float(maximum), max(float(minimum), thin_mm * float(fraction)))
+
+
 def draw_wavy(ax, pts, color=INK, lw=1.0, amp=0.028, wavelength=0.17,
-              ticks=False, zorder=3):
+              ticks=False, zorder=3, clearance_mm=CONTACT_CLEARANCE_MM,
+              background="white"):
     """沿折线 pts（数据坐标）绘制波状线，表示不整合面。
 
     ticks=True 时在波状线下方加短斜线（角度不整合，示下伏地层被削截）。
@@ -1910,12 +2127,14 @@ def draw_wavy(ax, pts, color=INK, lw=1.0, amp=0.028, wavelength=0.17,
     """
     sx, sy = _units_per_inch(ax)
     p = np.asarray(pts, float)
+    if p.ndim != 2 or len(p) < 2:
+        return []
     x_in, y_in = p[:, 0] / sx, p[:, 1] / sy  # 换算到英寸空间，保证波形均匀
     seg = np.hypot(np.diff(x_in), np.diff(y_in))
     s = np.concatenate([[0.0], np.cumsum(seg)])
     length = s[-1]
     if length <= 0:
-        return
+        return []
     si = np.linspace(0, length, max(int(length / (wavelength / 24)), 16))
     xi = np.interp(si, s, x_in)
     yi = np.interp(si, s, y_in)
@@ -1923,9 +2142,21 @@ def draw_wavy(ax, pts, color=INK, lw=1.0, amp=0.028, wavelength=0.17,
     ty = np.gradient(yi, si)
     norm = np.hypot(tx, ty)
     nx, ny = -ty / norm, tx / norm  # 单位法向
-    off = amp * np.sin(2 * np.pi * si / wavelength)
-    ax.plot((xi + nx * off) * sx, (yi + ny * off) * sy, color=color, lw=lw,
-            zorder=zorder, solid_capstyle="round")
+    # 取最接近目标波长的整数个周期，使波线严格回到两个接触端点；剖面中
+    # 不同接触类型在区段中点拼接时不会再出现相位错口。
+    cycles = max(1, int(round(length / wavelength)))
+    off = amp * np.sin(2 * np.pi * cycles * si / length)
+    artists = _draw_cased_line(
+        ax,
+        (xi + nx * off) * sx,
+        (yi + ny * off) * sy,
+        color,
+        lw,
+        zorder,
+        clearance_mm,
+        background,
+        "butt",
+    )
 
     if ticks:
         # 视觉"下方"对应的英寸空间 y 方向（柱状图深度轴反向时为正）
@@ -1934,9 +2165,69 @@ def draw_wavy(ax, pts, color=INK, lw=1.0, amp=0.028, wavelength=0.17,
         for s0 in np.arange(step / 2, length, step):
             x0 = np.interp(s0, s, x_in)
             y0 = np.interp(s0, s, y_in)
-            ax.plot([(x0 + 0.015) * sx, (x0 + 0.055) * sx],
-                    [(y0 + down * 0.035) * sy, (y0 + down * 0.10) * sy],
-                    color=color, lw=lw * 0.8, zorder=zorder)
+            tangent = np.array([
+                np.interp(s0, si, tx),
+                np.interp(s0, si, ty),
+            ])
+            tangent /= np.hypot(*tangent)
+            normal = np.array([-tangent[1], tangent[0]])
+            if normal[1] * down < 0:
+                normal *= -1
+            start = (np.array([x0, y0])
+                     + 0.015 * tangent + 0.035 * normal)
+            end = (np.array([x0, y0])
+                   + 0.055 * tangent + 0.10 * normal)
+            tick_lw = lw * 0.8
+            artists.extend(
+                _draw_cased_line(
+                    ax,
+                    [start[0] * sx, end[0] * sx],
+                    [start[1] * sy, end[1] * sy],
+                    color,
+                    tick_lw,
+                    zorder,
+                    clearance_mm,
+                    background,
+                    "round",
+                )
+            )
+    return artists
+
+
+def draw_contact(ax, pts, contact="", color=INK, lw=0.9, zorder=3,
+                 clearance_mm=CONTACT_CLEARANCE_MM, background="white"):
+    """绘制普通或不整合接触面，并隔离其与两侧岩性花纹。
+
+    普通接触面为直线；平行不整合为波状线；角度不整合在波状线的下伏侧
+    加短斜线。所有线条都使用相同毫米净空，避免显示和打印时与花纹混线。
+    返回参与绘制的 ``Line2D`` 列表，便于调用方和测试检查。
+    """
+    unconf, angular = is_unconformity(contact)
+    if unconf:
+        return draw_wavy(
+            ax,
+            pts,
+            color=color,
+            lw=lw,
+            ticks=angular,
+            zorder=zorder,
+            clearance_mm=clearance_mm,
+            background=background,
+        )
+    p = np.asarray(pts, float)
+    if len(p) < 2:
+        return []
+    return _draw_cased_line(
+        ax,
+        p[:, 0],
+        p[:, 1],
+        color,
+        lw,
+        zorder,
+        clearance_mm,
+        background,
+        "butt",
+    )
 
 
 def draw_break(ax, x0, x1, yc, gap=0.13, color=INK, lw=0.9, zorder=4):
@@ -1975,8 +2266,15 @@ def legend_items(lith_names):
     return items
 
 
-# 图例小样标准尺寸：12×8 mm（长宽比 1.5:1），与花纹一览表一致
-_SW_IN, _SH_IN = 0.472, 0.315
+# 复刻 GB/T 958—2015 表 4 正式图版的“图例（Legend or symbol）”样框：
+# 约 15 mm × 10 mm。正文没有把样框尺寸另列为强制条款，强制的是每个
+# 图元的毫米制图参数；因此这里称“表 4 图版样框”，并保留其精确物理尺寸。
+_MM_IN = 1.0 / 25.4
+_SW_IN, _SH_IN = 15 * _MM_IN, 10 * _MM_IN
+_LEGEND_PAD_X_IN = 1.5 * _MM_IN
+_LEGEND_PAD_Y_IN = 1.5 * _MM_IN
+_LEGEND_GAP_X_IN = 1.5 * _MM_IN
+_LEGEND_GAP_Y_IN = 1.5 * _MM_IN
 
 
 def _em_width(text):
@@ -2002,132 +2300,232 @@ def _wrap_em(text, width_em):
 
 
 def legend_col_cm(lith_names, fontsize=8.0):
-    """柱状图“图例”列的建议宽度（厘米）：花纹小样 + 最长名称一行放下。
+    """柱状图图例项建议宽度：表 4 图版样框 + 最长名称一行放下。
     调用方会按 WIDTH_LIMITS 夹紧；超出上限时由 draw_legend_column
-    自动缩小字号或折行兜底。"""
+    自动折行兜底。"""
     items = legend_items(lith_names)
     max_em = max((_em_width(n) for n in items), default=1.0)
-    need_in = 0.08 * 2 + _SW_IN + 0.07 + max_em * fontsize / 72 + 0.06
+    need_in = (2 * _LEGEND_PAD_X_IN + _SW_IN + _LEGEND_GAP_X_IN
+               + max_em * fontsize / 72)
     return need_in * 2.54
 
 
-def draw_legend_column(ax, x0, x1, ytop, ybot, lith_names, fontsize=8.0):
-    """在 ax 的数据坐标矩形 [x0,x1]×[ytop,ybot] 内，从上到下**均匀**排列
-    岩性图例（花纹小样 + 名称），位置与地层层界无关。ytop 为视觉顶部
-    对应的 y 值（深度/向下轴里较小者）。名称按可用宽度自动缩小字号、
-    必要时折行，不再溢出列边界。"""
+def _legend_column_metrics(lith_names, col_in, fontsize=8.0):
+    """返回 ``(items, layouts, required_height_in)`` 并校验图版样框宽度。"""
     items = legend_items(lith_names)
     if not items:
-        return
-    sx, sy = _units_per_inch(ax)
-    col_in = (x1 - x0) / sx               # 列宽（英寸）
-    pad_in, gap_in = 0.08, 0.07
-    sw_in = min(_SW_IN, max(0.28, col_in * 0.38))   # 花纹小样宽
-    text_in = max(col_in - 2 * pad_in - sw_in - gap_in, 0.25)
+        return [], [], 0.0
+    text_in = (col_in - 2 * _LEGEND_PAD_X_IN - _SW_IN
+               - _LEGEND_GAP_X_IN)
+    if text_in < 7 * _MM_IN - 1e-9:
+        need_cm = (2 * _LEGEND_PAD_X_IN + _SW_IN + _LEGEND_GAP_X_IN
+                   + 7 * _MM_IN) * 2.54
+        raise ValueError(
+            "图例列过窄：参照 GB/T 958—2015 表 4 图版的样框为 "
+            "15 mm × 10 mm，"
+            f"图例列至少需要 {need_cm:.1f} 厘米"
+        )
 
-    span = abs(ybot - ytop)
-    n = len(items)
-    slot = span / n                       # 每项占的高度（数据坐标）
-    slot_in = slot / sy
-    sh_in = min(_SH_IN, sw_in * 2 / 3, max(slot_in * 0.6, 0.12))
-
-    # 字号：先按项高约束，再保证最长名称在可用宽度内至多两行放下
-    fs = min(fontsize, max(6.0, slot_in / 0.055))
-    max_em = max(_em_width(s) for s in items)
-    if max_em * fs / 72 > text_in:        # 一行放不下：先缩字号
-        fs = max(6.0, text_in / max_em * 72)
+    fs = min(max(float(fontsize), 6.0), 9.0)
     wrap_em = text_in / (fs / 72)
+    layouts = []
+    for std in items:
+        lines = _wrap_em(std, wrap_em)
+        line_h_in = fs / 72 * 1.25
+        content_h_in = max(_SH_IN, len(lines) * line_h_in)
+        layouts.append((std, lines, line_h_in, content_h_in, fs))
+    required_in = (2 * _LEGEND_PAD_Y_IN
+                   + sum(item[3] for item in layouts)
+                   + _LEGEND_GAP_Y_IN * max(0, len(layouts) - 1))
+    return items, layouts, required_in
 
-    sw, sh = sw_in * sx, sh_in * sy
-    y0 = min(ytop, ybot)
-    for i, std in enumerate(items):
-        yc = y0 + (i + 0.5) * slot
-        bx = x0 + pad_in * sx
+
+def legend_column_height_in(lith_names, col_in, fontsize=8.0):
+    """保持表 4 图版 15 mm × 10 mm 样框时，图例列需要的物理高度。"""
+    return _legend_column_metrics(lith_names, col_in, fontsize)[2]
+
+
+def draw_legend_column(ax, x0, x1, ytop, ybot, lith_names, fontsize=8.0):
+    """在柱状图图例列内按标准样框紧凑排列岩性图例。
+
+    每个花纹样框固定为参照 GB/T 958—2015 表 4 图版的 15 mm × 10 mm，
+    花纹以原始毫米制图参数绘制；不会再随图例项数量缩小或改变疏密。
+    名称在样框右侧完整折行，各项从视觉顶部开始排列，并以细横线分隔。
+    如果可用高度不足以保留标准物理尺寸，明确报错而不是静默变形。
+    """
+    sx, sy = _units_per_inch(ax)
+    col_in = abs(x1 - x0) / sx
+    span_in = abs(ybot - ytop) / sy
+    items, layouts, required_in = _legend_column_metrics(
+        lith_names, col_in, fontsize)
+    if not items:
+        return []
+    if required_in > span_in + 1e-9:
+        raise ValueError(
+            "图例区高度不足：为保持表 4 图版的 15 mm × 10 mm "
+            f"样框，{len(items)} 项图例至少需要 "
+            f"{required_in * 2.54:.1f} 厘米，当前只有 {span_in * 2.54:.1f} 厘米；"
+            "请减小比例尺分母、增大页面，或减少岩性种类"
+        )
+
+    direction = 1.0 if ybot >= ytop else -1.0
+    bx = min(x0, x1) + _LEGEND_PAD_X_IN * sx
+    sw, sh = _SW_IN * sx, _SH_IN * sy
+    cursor_in = _LEGEND_PAD_Y_IN
+    artists = []
+    for index, (std, lines, line_h_in, content_h_in, fs) in enumerate(layouts):
+        yc = ytop + direction * (cursor_in + content_h_in / 2) * sy
         verts = [(bx, yc - sh / 2), (bx + sw, yc - sh / 2),
                  (bx + sw, yc + sh / 2), (bx, yc + sh / 2)]
-        paint(ax, verts, std, spacing=_swatch_spacing(std, sh_in))
-        ax.add_patch(Polygon(verts, closed=True, facecolor="none",
-                             edgecolor="#333333", lw=0.6, zorder=3))
-        lines = _wrap_em(std, wrap_em)[:3]
-        line_dy = fs / 72 * 1.3 * sy
+        # 与柱内完全相同的 BASE_SPACING；不得为了填满样框而缩放花纹。
+        artists.append(paint(ax, verts, std, spacing=BASE_SPACING))
+        border = Polygon(verts, closed=True, facecolor="none",
+                         edgecolor="#000000", lw=0.1 * 72 / 25.4,
+                         zorder=3)
+        ax.add_patch(border)
+        artists.append(border)
+        line_dy = line_h_in * sy
         ty = yc - (len(lines) - 1) / 2 * line_dy
         for ln in lines:
-            ax.text(bx + sw + gap_in * sx, ty, ln, ha="left", va="center",
-                    fontsize=fs)
+            artists.append(ax.text(
+                bx + sw + _LEGEND_GAP_X_IN * sx, ty, ln,
+                ha="left", va="center", fontsize=fs
+            ))
             ty += line_dy
+        cursor_in += content_h_in
+        if index < len(layouts) - 1:
+            separator_y = ytop + direction * (
+                cursor_in + _LEGEND_GAP_Y_IN / 2) * sy
+            artists.extend(ax.plot(
+                [x0, x1], [separator_y, separator_y],
+                color="#b8b8b8", lw=0.35, zorder=3
+            ))
+            cursor_in += _LEGEND_GAP_Y_IN
+    return artists
 
 
-def _legend_grid(items, w_in, fontsize=8.0, lead_w=0.75, nrows=3):
-    """图例网格布局：制图惯例的**三行**排法——图例区固定排三行（项数
-    不足三项时取项数），各列**自上而下**排满三项、再**自左而右**延伸。
-    列宽按最长名称实测；列数多、总宽超出可用宽度时自动缩小字号。
-    返回 (行数, 列数, 每列宽（英寸）, 适配字号)。"""
-    rows = max(1, min(nrows, len(items)))
-    cols = -(-len(items) // rows)
-    max_em = max((_em_width(n) for n in items), default=1.0)
-    fixed = _SW_IN + 0.08 + 0.30          # 小样 + 间隙 + 列间距
-    fs = fontsize
-    item_w = fixed + max_em * fs / 72
-    avail = max(w_in - lead_w, 1.0)
-    if cols * item_w > avail:             # 放不下：缩小字号适配
-        fs = max(6.0, (avail / cols - fixed) * 72 / max_em)
-        item_w = avail / cols
-    return rows, cols, item_w, fs
+def _legend_grid(items, w_in, fontsize=8.0, item_w_in=None, nrows=None):
+    """量算完整名称、固定标准样框的自适应图例网格。
+
+    返回 ``(rows, cols, cell_w, layouts, row_heights)``。项目按阅读顺序
+    先左后右、再换到下一行；``nrows`` 仅作为兼容的显式行数选项，默认
+    根据可用宽度与图例项宽度自动决定，不再宣称固定三行是标准要求。
+    """
+    if not items:
+        return 0, 0, 0.0, [], []
+    fs = min(max(float(fontsize), 6.0), 9.0)
+    minimum_cell = (2 * _LEGEND_PAD_X_IN + _SW_IN + _LEGEND_GAP_X_IN
+                    + 7 * _MM_IN)
+    if w_in + 1e-9 < minimum_cell:
+        raise ValueError(
+            "图例区过窄：15 mm × 10 mm 图版样框及完整名称至少需要 "
+            f"{minimum_cell * 2.54:.1f} 厘米宽度"
+        )
+    if nrows is not None:
+        rows = max(1, min(int(nrows), len(items)))
+        cols = -(-len(items) // rows)
+        if w_in / cols + 1e-9 < minimum_cell:
+            raise ValueError("指定的图例行数无法容纳标准样框和完整名称")
+    else:
+        target = max(float(item_w_in or 0.0), minimum_cell)
+        cols = max(1, min(len(items), int(w_in / target)))
+        rows = -(-len(items) // cols)
+    cell_w = w_in / cols
+    text_w = (cell_w - 2 * _LEGEND_PAD_X_IN - _SW_IN
+              - _LEGEND_GAP_X_IN)
+    wrap_em = text_w / (fs / 72)
+    layouts = []
+    row_heights = [_SH_IN for _ in range(rows)]
+    for index, std in enumerate(items):
+        lines = _wrap_em(std, wrap_em)
+        line_h = fs / 72 * 1.25
+        content_h = max(_SH_IN, len(lines) * line_h)
+        row = index // cols
+        row_heights[row] = max(row_heights[row], content_h)
+        layouts.append((std, lines, line_h, fs, row, index % cols))
+    return rows, cols, cell_w, layouts, row_heights
 
 
-def legend_height_in(lith_names, w_in, fontsize=8.0, nrows=3):
-    """draw_legend 需要的区域高度（英寸），供调用方预留版面。"""
+def legend_height_in(lith_names, w_in, fontsize=8.0, nrows=None,
+                     item_w_in=None, include_note=True):
+    """GB/T 958 花纹图例块所需的物理高度，供调用方在绘图前预留。"""
     items = legend_items(lith_names)
     if not items:
         return 0.0
-    rows, _cols, _item_w, _fs = _legend_grid(items, w_in, fontsize,
-                                             nrows=nrows)
-    return 0.10 + 0.50 * rows
+    rows, _cols, _cell_w, _layouts, row_heights = _legend_grid(
+        items, w_in, fontsize, item_w_in=item_w_in, nrows=nrows)
+    title_h = 0.30
+    note_h = 0.24 if include_note else 0.0
+    return (0.06 + title_h + 0.04 + sum(row_heights)
+            + 0.08 * max(0, rows - 1) + 0.05 + note_h)
 
 
-def draw_legend(fig, lith_names, rect, title="图  例", spacing=BASE_SPACING,
-                fontsize=8.0, nrows=3):
-    """在 figure 上的 rect=[l,b,w,h]（figure 坐标）区域内绘制岩性图例。
+def draw_legend(fig, lith_names, rect,
+                title="岩性图例（花纹参照 GB/T 958—2015 表 4）",
+                spacing=BASE_SPACING, fontsize=8.0, nrows=None,
+                item_w_in=None, include_note=True):
+    """在图底绘制固定 15 mm × 10 mm 图版样框的自适应岩性图例块。
 
-    按制图惯例排成**三行**（nrows 可调）：各列自上而下排满三项、再
-    自左而右延伸。spacing 传绘图时用的花纹间距，使图例小样与图中填充
-    密度一致；列数多放不下时自动缩小字号。
+    图例按完整名称紧凑换行，花纹使用调用者传入的原始物理 ``spacing``，
+    不再为了凑行数改变密度。标准只规范花纹语义和毫米制图参数，并未规定
+    柱状图图例必须固定三行，因此这里按可用宽度自适应换列。
     """
     items = legend_items(lith_names)
     if not items:
-        return
+        return None
 
     ax = fig.add_axes(rect)
     ax.axis("off")
     fw, fh = fig.get_size_inches()
     w_in = rect[2] * fw
     h_in = rect[3] * fh
-    # 坐标即英寸，方便排版
     ax.set_xlim(0, w_in)
     ax.set_ylim(h_in, 0)
 
-    lead_w = 0.75  # "图例" 标题占位
-    rows, cols, item_w, fs = _legend_grid(items, w_in, fontsize,
-                                          lead_w, nrows)
-    sw, sh = _SW_IN, _SH_IN
-    # 三行等高：把区域高度均分成 rows 个等高行带，
-    # 花纹小样与名称都在各自行带内垂直居中
-    pad_v = 0.04
-    row_h = (h_in - 2 * pad_v) / rows
+    rows, cols, cell_w, layouts, row_heights = _legend_grid(
+        items, w_in, fontsize, item_w_in=item_w_in, nrows=nrows)
+    required = legend_height_in(
+        items, w_in, fontsize, nrows=nrows, item_w_in=item_w_in,
+        include_note=include_note)
+    if h_in + 1e-9 < required:
+        raise ValueError(
+            f"图例区高度不足：标准图例需要 {required * 2.54:.1f} 厘米，"
+            f"当前只有 {h_in * 2.54:.1f} 厘米"
+        )
 
-    ax.text(0, h_in / 2, title, fontsize=fontsize + 1,
+    y = 0.06
+    title_h = 0.30
+    ax.text(0, y + title_h / 2, title, fontsize=fontsize + 1,
             fontweight="bold", ha="left", va="center")
-    for i, std in enumerate(items):
-        c, r = divmod(i, rows)            # 各列自上而下、再自左而右
-        x = lead_w + c * item_w
-        yc = pad_v + (r + 0.5) * row_h    # 行带中心
-        verts = [(x, yc - sh / 2), (x + sw, yc - sh / 2),
-                 (x + sw, yc + sh / 2), (x, yc + sh / 2)]
-        paint(ax, verts, std, spacing=_swatch_spacing(std, sh, spacing))
+    ax.plot([0, w_in], [y + title_h, y + title_h],
+            color="#777777", lw=0.35)
+    y += title_h + 0.04
+    row_tops = []
+    for row_h in row_heights:
+        row_tops.append(y)
+        y += row_h + 0.08
+
+    frame_lw = 0.1 * 72 / 25.4
+    for std, lines, line_h, fs, row, col in layouts:
+        x = col * cell_w + _LEGEND_PAD_X_IN
+        yc = row_tops[row] + row_heights[row] / 2
+        verts = [(x, yc - _SH_IN / 2), (x + _SW_IN, yc - _SH_IN / 2),
+                 (x + _SW_IN, yc + _SH_IN / 2), (x, yc + _SH_IN / 2)]
+        paint(ax, verts, std, spacing=spacing)
         ax.add_patch(Polygon(verts, closed=True, facecolor="none",
-                             edgecolor="#333333", lw=0.7, zorder=3))
-        ax.text(x + sw + 0.08, yc, std, fontsize=fs,
+                             edgecolor="#000000", lw=frame_lw, zorder=3))
+        tx = x + _SW_IN + _LEGEND_GAP_X_IN
+        ty = yc - (len(lines) - 1) / 2 * line_h
+        for line in lines:
+            ax.text(tx, ty, line, fontsize=fs, ha="left", va="center")
+            ty += line_h
+
+    if include_note:
+        ax.text(0, required - 0.12,
+                "注：填充色用于辅助区分岩性，地质含义以花纹及名称为准。",
+                fontsize=max(6.0, fontsize - 1), color="#555555",
                 ha="left", va="center")
+    return ax
 
 
 # ---------------------------------------------------------------------------
@@ -2282,7 +2680,7 @@ def render_pattern_sheet(names=None, title="岩性花纹一览", ncols=4):
         yc = top - (r + 0.5) * cell_h   # 行带中心：各行等高、小样垂直居中
         verts = [(x, yc - sh / 2), (x + sw, yc - sh / 2),
                  (x + sw, yc + sh / 2), (x, yc + sh / 2)]
-        paint(ax, verts, name, spacing=_swatch_spacing(name, sh))
+        paint(ax, verts, name, spacing=BASE_SPACING)
         ax.add_patch(Polygon(verts, closed=True, facecolor="none",
                              edgecolor="#333333", lw=0.7, zorder=3))
         ax.text(x + sw + 0.1, yc, name, fontsize=8.5,

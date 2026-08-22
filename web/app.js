@@ -11,6 +11,12 @@
   const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 2.5, 3];
   const DEFAULT_PAGES = ["A0", "A1", "A2", "A3", "A4", "A5", "B3", "B4", "B5", "8开", "16开", "信纸", "法律纸", "21x29.7"];
   const DEFAULT_FORMATS = ["png", "pdf", "svg"];
+  const DEFAULT_PATTERN_ROW_HEIGHT_MM = Object.freeze({
+    min: 1,
+    max: 10,
+    default: 2.5,
+    step: 0.1
+  });
   const DEFAULT_CATEGORIES = ["基本花纹", "沉积岩", "松散堆积物", "侵入岩", "火山熔岩", "火山碎屑岩", "变质岩", "蚀变岩", "构造岩", "混合岩", "脉岩"];
   const DEFAULT_SHAPES = [
     "小点", "中点", "大点", "密点", "疏点", "实心圆", "空心圆", "小空心圆", "大空心圆",
@@ -27,7 +33,7 @@
     "连接带": [0.2, 1.2],
     "柱状图": [1, 8],
     "备注": [0.8, 6],
-    "图例": [2, 6]
+    "图例": [3, 6]
   };
   const STRATA_LABELS = {
     geochron: "地质年代",
@@ -71,6 +77,7 @@
     chartTitle: byId("chart-title"),
     chartFont: byId("chart-font"),
     chartFontSize: byId("chart-font-size"),
+    chartPatternRowHeight: byId("chart-pattern-row-height"),
     columnPageControls: byId("column-page-controls"),
     sectionPageControls: byId("section-page-controls"),
     columnControls: byId("column-controls"),
@@ -383,6 +390,11 @@
     const sheets = getAny(raw, ["sheets"], {});
     const pattern = getAny(raw, ["pattern", "patterns"], {});
     const dpi = getAny(render, ["dpi"], {});
+    const patternRowHeight = getAny(
+      render,
+      ["pattern_row_height_mm", "patternRowHeightMm"],
+      {}
+    );
     const formats = normaliseStringList(
       getAny(render, ["formats", "export_formats", "exportFormats"], getAny(raw, ["formats"], DEFAULT_FORMATS)),
       DEFAULT_FORMATS
@@ -408,6 +420,12 @@
           min: Number(getAny(dpi, ["min", "minimum"], 72)) || 72,
           max: Number(getAny(dpi, ["max", "maximum"], 600)) || 600,
           default: Number(getAny(dpi, ["default", "value"], 300)) || 300
+        },
+        patternRowHeightMm: {
+          min: Number(getAny(patternRowHeight, ["min", "minimum"], DEFAULT_PATTERN_ROW_HEIGHT_MM.min)) || DEFAULT_PATTERN_ROW_HEIGHT_MM.min,
+          max: Number(getAny(patternRowHeight, ["max", "maximum"], DEFAULT_PATTERN_ROW_HEIGHT_MM.max)) || DEFAULT_PATTERN_ROW_HEIGHT_MM.max,
+          default: Number(getAny(patternRowHeight, ["default", "value"], DEFAULT_PATTERN_ROW_HEIGHT_MM.default)) || DEFAULT_PATTERN_ROW_HEIGHT_MM.default,
+          step: Number(getAny(patternRowHeight, ["step", "increment"], DEFAULT_PATTERN_ROW_HEIGHT_MM.step)) || DEFAULT_PATTERN_ROW_HEIGHT_MM.step
         },
         pages: normaliseChoices(getAny(render, ["pages", "page_sizes", "pageSizes"], DEFAULT_PAGES), DEFAULT_PAGES),
         fonts,
@@ -568,6 +586,14 @@
     dom.exportDpi.max = String(caps.render.dpi.max);
     if (!fieldIsDirty("export-dpi")) dom.exportDpi.value = String(caps.render.dpi.default);
 
+    const patternRowHeight = caps.render.patternRowHeightMm;
+    dom.chartPatternRowHeight.min = String(patternRowHeight.min);
+    dom.chartPatternRowHeight.max = String(patternRowHeight.max);
+    dom.chartPatternRowHeight.step = String(patternRowHeight.step);
+    if (!fieldIsDirty("chart-pattern-row-height") && !state.document) {
+      dom.chartPatternRowHeight.value = String(patternRowHeight.default);
+    }
+
     dom.pageList.replaceChildren();
     for (const page of caps.render.pages) appendOption(dom.pageList, page.value, page.label);
     if (!fieldIsDirty("column-page") && !state.document) {
@@ -608,7 +634,7 @@
 
       const text = document.createElement("span");
       text.className = "width-label";
-      text.textContent = item.name;
+      text.textContent = item.name === "图例" ? "图例项宽度" : item.name;
       if (item.min !== "" && item.max !== "" && item.min !== undefined && item.max !== undefined) {
         const range = document.createElement("small");
         range.textContent = `${item.min}–${item.max} cm`;
@@ -854,6 +880,14 @@
     dom.chartTitle.value = String(getAny(defaults, ["title"], meta.kind === "column" ? "综合地层柱状图" : "地层剖面图"));
     dom.chartFont.value = String(getAny(defaults, ["font"], "") || "");
     dom.chartFontSize.value = String(getAny(defaults, ["font_size", "fontSize"], 8));
+    const patternRowHeightDefault = state.capabilities?.render.patternRowHeightMm?.default
+      ?? DEFAULT_PATTERN_ROW_HEIGHT_MM.default;
+    dom.chartPatternRowHeight.value = String(getAny(
+      defaults,
+      ["pattern_row_height_mm", "patternRowHeightMm"],
+      patternRowHeightDefault
+    ));
+    setFieldInvalid(dom.chartPatternRowHeight, false);
     dom.columnPage.value = String(getAny(defaults, ["page"], "A4"));
     dom.columnLandscape.checked = Boolean(getAny(defaults, ["landscape"], false));
     dom.columnScale.value = getAny(defaults, ["scale"], "") ?? "";
@@ -1013,10 +1047,18 @@
   function collectRenderOptions() {
     if (!state.document) throw new Error("尚未载入数据");
     validateNumber(dom.chartFontSize, "字号", 6, 12);
+    const patternRowHeight = state.capabilities?.render.patternRowHeightMm
+      || DEFAULT_PATTERN_ROW_HEIGHT_MM;
     const options = {
       title: dom.chartTitle.value.trim(),
       font: dom.chartFont.value || null,
-      font_size: numberOrText(dom.chartFontSize, 8)
+      font_size: numberOrText(dom.chartFontSize, 8),
+      pattern_row_height_mm: validateNumber(
+        dom.chartPatternRowHeight,
+        "花纹层厚",
+        patternRowHeight.min,
+        patternRowHeight.max
+      )
     };
     if (state.document.kind === "section") {
       options.ve = validateNumber(dom.sectionVe, "垂直夸大", 0.1, 50, {optional: true});
@@ -1054,7 +1096,9 @@
 
   function previewDpi() {
     const dpi = state.capabilities?.render.dpi || {min: 72, max: 600};
-    return Math.max(dpi.min, Math.min(dpi.max, 120));
+    // 144 DPI keeps 0.1–0.3 mm geological symbols legible on screen while
+    // remaining far below the formal-export default of 300 DPI.
+    return Math.max(dpi.min, Math.min(dpi.max, 144));
   }
 
   function scheduleChartRender(delay = 350, fit = false) {

@@ -136,14 +136,25 @@ def _layer_order(holes):
     return order
 
 
-def render_section(holes, title="地层剖面图", ve=None, fig_width=11.0):
+def render_section(holes, title="地层剖面图", ve=None, fig_width=11.0,
+                   pattern_row_height_mm=lithology.PATTERN_ROW_HEIGHT_MM):
     """绘制剖面图，返回 matplotlib Figure。
 
     ve: 垂直夸大系数（如 2 表示纵向放大 2 倍）；不传则自动适配画幅。
+    pattern_row_height_mm: 内置层状岩性花纹的基础层厚（毫米，1–10）；
+                           地层变厚时增加重复层数，不拉伸单层。
 
     函数会深拷贝输入，不向调用方的钻孔字典写入边界坐标。
     ve 必须在 0.1–50 之间；fig_width 必须在 2–100 英寸之间。
     """
+    row_height = lithology.resolve_pattern_row_height_mm(
+        pattern_row_height_mm)
+    with lithology.pattern_row_height_scope(row_height):
+        return _render_section_impl(holes, title, ve, fig_width)
+
+
+def _render_section_impl(holes, title="地层剖面图", ve=None, fig_width=11.0):
+    """在已建立花纹层高上下文后绘制剖面图。"""
     holes = copy.deepcopy(holes)
     if not isinstance(holes, (list, tuple)) or len(holes) < 2:
         raise ValueError("剖面图至少需要 2 个钻孔")
@@ -262,13 +273,17 @@ def render_section(holes, title="地层剖面图", ve=None, fig_width=11.0):
     ax.set_ylim(bot - span_y * 0.06, top + span_y * 0.22)  # 顶部留出孔号标注
     if ve:
         ax.set_aspect(ve)
+    pattern_sy = lithology._units_per_inch(ax)[1]
 
     def paint_interval(points, left_lith, right_lith):
         """相邻两孔岩性不同时在中点分区，显式保留侧向相变。"""
         if not left_lith and not right_lith:
             return
         if left_lith == right_lith or not left_lith or not right_lith:
-            lithology.paint(ax, points, left_lith or right_lith, spacing=0.11)
+            lithology.paint(
+                ax, points, left_lith or right_lith,
+                spacing=lithology.BASE_SPACING,
+            )
             return
         top_left, top_right, bot_right, bot_left = points
         mid_top = ((top_left[0] + top_right[0]) / 2,
@@ -276,42 +291,71 @@ def render_section(holes, title="地层剖面图", ve=None, fig_width=11.0):
         mid_bot = ((bot_left[0] + bot_right[0]) / 2,
                    (bot_left[1] + bot_right[1]) / 2)
         lithology.paint(ax, [top_left, mid_top, mid_bot, bot_left],
-                        left_lith, spacing=0.11)
+                        left_lith, spacing=lithology.BASE_SPACING)
         lithology.paint(ax, [mid_top, top_right, bot_right, mid_bot],
-                        right_lith, spacing=0.11)
+                        right_lith, spacing=lithology.BASE_SPACING)
 
-    def draw_contact(points, contact):
-        unconf, angular = lithology.is_unconformity(contact)
-        if unconf:
-            lithology.draw_wavy(ax, points, color=_BOUND, lw=1.1,
-                                ticks=angular, zorder=3)
-        else:
-            ax.plot([p[0] for p in points], [p[1] for p in points],
-                    color=_BOUND, lw=0.9, zorder=3)
+    def draw_contact(points, contact, clearance_mm):
+        unconf, _angular = lithology.is_unconformity(contact)
+        lithology.draw_contact(
+            ax,
+            points,
+            contact,
+            color=_BOUND,
+            lw=1.1 if unconf else 0.9,
+            zorder=3,
+            clearance_mm=clearance_mm,
+        )
 
     # 地层多边形按孔间区段填充；底界接触关系也按区段表达。缺层端点
     # 仍保持厚度为零，因而自然形成尖灭三角形。
-    for no in order:
+    for layer_index, no in enumerate(order):
         tops = [(bh["x"], bh["bounds"][no][0]) for bh in holes]
         bots = [(bh["x"], bh["bounds"][no][1]) for bh in holes]
         names = lith_at[no]
         contacts = contact_at[no]
+        if names and names[0] and all(name == names[0] for name in names):
+            # 同一岩性横跨多个孔间区段时一次填充，避免每个区段重新起纹后
+            # 在钻孔处出现半行厚度不同或相位跳变。
+            lithology.paint(
+                ax,
+                tops + list(reversed(bots)),
+                names[0],
+                spacing=lithology.BASE_SPACING,
+            )
+        else:
+            for index in range(len(holes) - 1):
+                points = [tops[index], tops[index + 1],
+                          bots[index + 1], bots[index]]
+                paint_interval(points, names[index], names[index + 1])
+
+        next_no = order[layer_index + 1] if layer_index + 1 < len(order) else None
         for index in range(len(holes) - 1):
-            points = [tops[index], tops[index + 1],
-                      bots[index + 1], bots[index]]
-            paint_interval(points, names[index], names[index + 1])
+            nearby_heights = []
+            for boundary_no in (no, next_no):
+                if boundary_no is None:
+                    continue
+                for hole_index in (index, index + 1):
+                    upper, lower = holes[hole_index]["bounds"][boundary_no]
+                    height_in = abs(upper - lower) / pattern_sy
+                    if height_in > 0:
+                        nearby_heights.append(height_in)
+            clearance_mm = lithology.contact_clearance_mm(nearby_heights)
 
             left_contact, right_contact = contacts[index:index + 2]
             left_style = lithology.is_unconformity(left_contact)
             right_style = lithology.is_unconformity(right_contact)
             if left_style == right_style or not left_contact or not right_contact:
                 draw_contact(bots[index:index + 2],
-                             left_contact or right_contact)
+                             left_contact or right_contact,
+                             clearance_mm)
             else:
                 midpoint = ((bots[index][0] + bots[index + 1][0]) / 2,
                             (bots[index][1] + bots[index + 1][1]) / 2)
-                draw_contact([bots[index], midpoint], left_contact)
-                draw_contact([midpoint, bots[index + 1]], right_contact)
+                draw_contact([bots[index], midpoint], left_contact,
+                             clearance_mm)
+                draw_contact([midpoint, bots[index + 1]], right_contact,
+                             clearance_mm)
 
     # 地面线
     ax.plot(xs, [bh["elev"] for bh in holes], color=_GROUND, lw=2.2, zorder=4)
@@ -345,8 +389,7 @@ def render_section(holes, title="地层剖面图", ve=None, fig_width=11.0):
 
     lithology.draw_legend(
         fig, legend_names,
-        [0.075, 0.12 / fig_h, 0.895, legend_in / fig_h],
-        spacing=0.11)   # 与剖面填充同密度，小样才与图中一致
+        [0.075, 0.12 / fig_h, 0.895, legend_in / fig_h])
     if any(lithology.is_unconformity(contact)[0]
            for contacts in contact_at.values() for contact in contacts):
         fig.text(0.97, 0.14 / fig_h, "波状线示不整合面，附短斜线者为角度不整合",
