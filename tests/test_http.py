@@ -159,7 +159,7 @@ class HTTPServerEndToEndTests(unittest.TestCase):
         self.assertIn("png", capabilities["render"]["formats"])
         self.assertIn("A4", capabilities["render"]["pages"])
         self.assertEqual(
-            capabilities["render"]["width_limits"]["图例"]["min"], 3.0)
+            capabilities["render"]["width_limits"]["图例"]["min"], 1.8)
         self.assertEqual(
             capabilities["render"]["pattern_row_height_mm"],
             {

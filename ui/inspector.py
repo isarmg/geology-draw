@@ -137,12 +137,11 @@ class Inspector(ScrollFrame):
         ttk.Label(row, text="pt（6–12）", style="Hint.TLabel").pack(
             side=tk.LEFT, padx=(t.px(6), 0))
 
-        # 花纹层厚同时影响柱状图、剖面图及其图例，因此不能
-        # 放进只在柱状图中显示的 _page_rows。
-        row = field_row(b, t, "花纹层厚", label_w=_LBL, pady=0)
+        # 只影响柱状图/剖面图主体；图例是独立的标准代表小样。
+        row = field_row(b, t, "主图花纹层厚", label_w=_LBL, pady=0)
         self._entry(row, self.state.pattern_row_height_mm, width=7).pack(
             side=tk.LEFT)
-        ttk.Label(row, text="mm（1–10，默认 2.5）", style="Hint.TLabel").pack(
+        ttk.Label(row, text="mm（1–10；图例不受影响）", style="Hint.TLabel").pack(
             side=tk.LEFT, padx=(t.px(6), 0))
 
     def _build_content(self):

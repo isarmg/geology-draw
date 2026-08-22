@@ -212,8 +212,8 @@ def main():
             type=_pattern_row_height_arg,
             default=PATTERN_ROW_HEIGHT_MM,
             metavar="MM",
-            help=(f"岩性花纹基础层高（毫米，{row_min:g}–{row_max:g}，"
-                  f"默认 {PATTERN_ROW_HEIGHT_MM:g}）"),
+            help=(f"主图岩性花纹基础层高（毫米，{row_min:g}–{row_max:g}，"
+                  f"默认 {PATTERN_ROW_HEIGHT_MM:g}；图例小样不受影响）"),
         )
         if kind == "column":
             sp.add_argument("--scale", type=int,

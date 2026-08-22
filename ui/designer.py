@@ -285,9 +285,10 @@ class DesignerPanel(ScrollFrame):
                                         edgecolor=self.theme.c["border_hi"],
                                         lw=0.8))
 
-        # 右：图例小样（18×12 mm）；与主图使用同一物理节距，
-        # 样框只裁剪花纹，不会为显示整个瓦片而压缩单层。
-        sw, sh = 0.71, 0.472
+        # 右：与导出图件一致的 15×10 mm 图例小样。设计器中
+        # 的自定义 spec 保留用户声明的重复密度与 rows 语义。
+        sw = L.LEGEND_SWATCH_WIDTH_MM / 25.4
+        sh = L.LEGEND_SWATCH_HEIGHT_MM / 25.4
         ax2 = self._fig.add_axes([0.07 + (w1 + 0.18) / fw,
                                   (fh - h1) / 2 / fh + (h1 - sh) / fh,
                                   sw / fw, sh / fh])
@@ -295,8 +296,12 @@ class DesignerPanel(ScrollFrame):
         ax2.set_ylim(sh, 0)
         ax2.axis("off")
         try:
-            L.paint(ax2, [(0, 0), (sw, 0), (sw, sh), (0, sh)], "__preview__",
-                    spec=spec, face=face, spacing=L.BASE_SPACING)
+            L.paint_legend_swatch(
+                ax2, [(0, 0), (sw, 0), (sw, sh), (0, sh)],
+                "__preview__", spec=spec, face=face,
+                spacing=L.BASE_SPACING,
+                height_mm=L.LEGEND_SWATCH_HEIGHT_MM,
+                rows=L.LEGEND_REPRESENTATIVE_ROWS)
         except Exception:
             pass
         ax2.add_patch(mpatches.Rectangle((0, 0), sw, sh, fill=False,

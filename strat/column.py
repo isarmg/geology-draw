@@ -178,12 +178,12 @@ WIDTH_LIMITS = {          # 栏名: (最小cm, 最大cm)
     "连接带":   (0.2, 1.2),   # 岩性柱两侧的折线连接带（默认版式）
     "柱状图":   (1.0, 8.0),
     "备注":     (0.8, 6.0),
-    "图例":     (3.0, 6.0),   # 图底单个图例项的目标宽度（可选）
+    "图例":     (1.8, 6.0),   # 15 mm 样框+左右各 1.5 mm 净空
 }
 DESC_MIN_CM = 1.5         # 描述栏（余量）最小宽度（厘米）
 
 _DEFAULT_CM = {"地层单位": 2.2, "厚度": 1.2, "连接带": 0.6, "备注": 2.7,
-               "图例": 3.6}
+               "图例": 2.4}
 
 _KEY2NAME = {"unit": "地层单位", "thick": "厚度", "gutl": "连接带",
              "gutr": "连接带", "log": "柱状图", "remark": "备注",
@@ -197,7 +197,7 @@ for _k, _head, _cat in _UNIT_LEVELS:
 
 
 def _auto_legend_width(widths, layers, show_legend, fontsize):
-    """用户没指定图例项宽度时，按最长岩性名估算（仍受范围夹紧）。"""
+    """未指定时，按 15 mm 样框及名称最多两行估算项宽。"""
     if not show_legend:
         return widths
     widths = dict(widths or {})
@@ -733,7 +733,13 @@ def _render_to_scale(layers, title, scale, page_w, page_h, widths=None,
                        thick_head="深度\n(m)" if depth_mode else "厚度\n(m)",
                        has_legend=False)
     header_in = 0.60 if grouped else 0.52
-    page_body = max(3.0, page_h - m_top - m_bottom - header_in - legend_h)
+    available_body = page_h - m_top - m_bottom - header_in - legend_h
+    if show_legend and available_body < 3.0 - 1e-9:
+        raise ValueError(
+            "图例项目过多，所选页面无法在保留 15 mm × 10 mm "
+            "样框的同时容纳图身；请改用更大页面、横向纸张或减少岩性种类"
+        )
+    page_body = max(3.0, available_body)
 
     # 对齐版式的可用高度同时受页面和文字避让需求约束。显式比例尺也使用
     # 同一目标，避免一经标记就把整根柱压得很短并导致正文无处排布。
@@ -955,7 +961,13 @@ def _render_staggered(layers, title, scale, page_w, page_h, widths=None,
                        thick_head="深度\n(m)" if depth_mode else "厚度\n(m)",
                        has_legend=False)
     header_in = 0.60 if grouped else 0.52
-    page_body = max(3.0, page_h - m_top - m_bottom - header_in - legend_h)
+    available_body = page_h - m_top - m_bottom - header_in - legend_h
+    if show_legend and available_body < 3.0 - 1e-9:
+        raise ValueError(
+            "图例项目过多，所选页面无法在保留 15 mm × 10 mm "
+            "样框的同时容纳图身；请改用更大页面、横向纸张或减少岩性种类"
+        )
+    page_body = max(3.0, available_body)
 
     # 行高：由描述/备注文字行数决定（取两者较大者）
     fs = bfs

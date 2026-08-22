@@ -298,21 +298,30 @@ class PatternPhysicalScaleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "花纹层厚"):
                     lithology.resolve_pattern_row_height_mm(value)
 
-    def test_public_renderers_apply_height_to_chart_and_legend_then_restore(self):
+    def test_public_renderers_isolate_legend_scope_and_restore(self):
         original_paint = lithology.paint
 
         def render_and_capture(draw):
             seen = []
 
             def capture(*args, **kwargs):
-                seen.append(lithology.current_pattern_row_height_mm())
+                seen.append((
+                    lithology.current_pattern_row_height_mm(),
+                    lithology._LEGEND_SWATCH_CONTEXT.get(),
+                ))
                 return original_paint(*args, **kwargs)
 
             with mock.patch.object(lithology, "paint", side_effect=capture):
                 figure = draw()
             try:
                 self.assertGreaterEqual(len(seen), 2)
-                self.assertEqual(set(seen), {4.0})
+                self.assertEqual({item[0] for item in seen}, {4.0})
+                self.assertIn(None, {item[1] for item in seen})
+                self.assertIn(
+                    (lithology.LEGEND_SWATCH_HEIGHT_MM,
+                     lithology.LEGEND_REPRESENTATIVE_ROWS),
+                    {item[1] for item in seen},
+                )
             finally:
                 figure.clear()
             self.assertEqual(lithology.current_pattern_row_height_mm(), 2.5)
@@ -796,7 +805,27 @@ class ColumnCorrectnessTests(unittest.TestCase):
 
 
 class LegendCorrectnessTests(unittest.TestCase):
-    def test_standard_swatch_keeps_15_by_10_mm_and_original_spacing(self):
+    @staticmethod
+    def _legend_horizontal_rows(name, main_row_height_mm):
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        _face, pattern_name = lithology.style_of(name)
+        pattern = lithology.PATTERNS[pattern_name]
+        with lithology.pattern_row_height_scope(main_row_height_mm):
+            with lithology.legend_swatch_scope(
+                    lithology.LEGEND_SWATCH_HEIGHT_MM,
+                    lithology.LEGEND_REPRESENTATIVE_ROWS):
+                segments, _marks, _coloured = pattern(
+                    0.0, width, 0.0, height,
+                    lithology.BASE_SPACING, lithology.BASE_SPACING)
+        return sorted({
+            round(float(segment[0][1]), 9)
+            for segment in segments
+            if (abs(float(segment[0][1]) - float(segment[1][1])) < 1e-9
+                and -1e-9 <= float(segment[0][1]) <= height + 1e-9)
+        })
+
+    def test_standard_swatch_keeps_15_by_10_mm_and_canonical_pattern(self):
         names = ["砂岩", "泥岩", "石灰岩"]
         width = 6.0
         height = lithology.legend_height_in(names, width, item_w_in=1.5)
@@ -819,6 +848,133 @@ class LegendCorrectnessTests(unittest.TestCase):
                 self.assertEqual(kwargs["spacing"], lithology.BASE_SPACING)
         finally:
             figure.clear()
+
+    def test_sandstone_and_limestone_have_three_representative_bands(self):
+        expected_pitch = (
+            lithology.LEGEND_SWATCH_HEIGHT_MM
+            / lithology.LEGEND_REPRESENTATIVE_ROWS / 25.4)
+        for name in ("砂岩", "砾岩", "石灰岩"):
+            variants = []
+            for main_height in (1.0, 2.5, 4.0, 10.0):
+                rows = self._legend_horizontal_rows(name, main_height)
+                variants.append(rows)
+                self.assertEqual(len(rows), 4, name)
+                for first, second in zip(rows, rows[1:]):
+                    self.assertAlmostEqual(
+                        second - first, expected_pitch, places=7)
+            self.assertTrue(all(rows == variants[0] for rows in variants[1:]))
+
+    def test_shale_keeps_dense_texture_independent_of_main_row_height(self):
+        variants = [
+            self._legend_horizontal_rows("页岩", main_height)
+            for main_height in (1.0, 2.5, 4.0, 10.0)
+        ]
+        self.assertTrue(all(rows == variants[0] for rows in variants[1:]))
+        self.assertGreaterEqual(len(variants[0]), 8)
+        self.assertNotEqual(len(variants[0]), 4)
+
+    def test_composite_shale_keeps_dense_base_and_three_modifier_rows(self):
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        for name in ("硅质页岩", "钙质页岩", "碳质页岩"):
+            _face, pattern_name = lithology.style_of(name)
+            pattern = lithology.PATTERNS[pattern_name]
+            with lithology.legend_swatch_scope(10, 3):
+                segments, marks, _coloured = pattern(
+                    0.0, width, 0.0, height,
+                    lithology.BASE_SPACING, lithology.BASE_SPACING)
+            dense_rows = {
+                round(float(segment[0][1]), 9)
+                for segment in segments
+                if abs(float(segment[0][1]) - float(segment[1][1])) < 1e-9
+            }
+            modifier_rows = {
+                round(float(y), 9)
+                for mark in marks for y in mark[1]
+                if -1e-9 <= float(y) <= height + 1e-9
+            }
+            self.assertGreaterEqual(len(dense_rows), 8, name)
+            self.assertEqual(len(modifier_rows), 3, name)
+            expected = [height / 6, height / 2, height * 5 / 6]
+            for actual, target in zip(sorted(modifier_rows), expected):
+                self.assertAlmostEqual(actual, target, places=7)
+
+    def test_sandy_soil_legacy_dot_pattern_is_normalised_to_three_rows(self):
+        _face, pattern_name = lithology.style_of("砂土")
+        pattern = lithology.PATTERNS[pattern_name]
+        self.assertTrue(hasattr(pattern, "legend_spec_for"))
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        variants = []
+        for main_height in (1.0, 4.0, 10.0):
+            with lithology.pattern_row_height_scope(main_height):
+                with lithology.legend_swatch_scope(10, 3):
+                    _segments, marks, _coloured = pattern(
+                        0.0, width, 0.0, height,
+                        lithology.BASE_SPACING, lithology.BASE_SPACING)
+            variants.append(sorted({
+                round(float(y), 9)
+                for mark in marks for y in mark[1]
+                if -1e-9 <= float(y) <= height + 1e-9
+            }))
+        self.assertTrue(all(rows == variants[0] for rows in variants[1:]))
+        self.assertEqual(len(variants[0]), 3)
+
+    def test_explicit_custom_rows_are_not_forced_to_three(self):
+        spec = [{"type": "rows", "spacing": 1.2,
+                 "rows": [["小点"], ["横线"], ["十字"]]},
+                {"type": "lines", "angle": 0, "spacing": 1.7}]
+        pattern = lithology.build_spec_pattern(spec, fixed_layer_rows=True)
+        self.assertFalse(pattern.legend_fixed_rows)
+        self.assertEqual(pattern.legend_spec_for(10, 3), pattern.source_spec)
+
+    def test_grid_balances_rows_and_avoids_singleton_last_row(self):
+        for count, expected_rows in ((19, 2), (28, 3)):
+            items = [f"岩性{index + 1}" for index in range(count)]
+            rows, _cols, _cell, layouts, _heights = lithology._legend_grid(
+                items, 7.4, fontsize=8.0)
+            self.assertEqual(rows, expected_rows)
+            counts = [sum(item[4] == row for item in layouts)
+                      for row in range(rows)]
+            self.assertLessEqual(max(counts) - min(counts), 1)
+            self.assertGreater(min(counts), 1)
+            self.assertEqual([item[0] for item in layouts], items)
+
+    def test_grid_keeps_complete_labels_with_at_most_two_lines(self):
+        names = ["含砾中粗粒长石石英砂岩（未固结）",
+                 "钙质页岩", "石灰岩"]
+        _rows, _cols, _cell, layouts, _heights = lithology._legend_grid(
+            names, 7.4, fontsize=8.0)
+        for original, lines, *_rest in layouts:
+            self.assertEqual("".join(lines), original)
+            self.assertLessEqual(len(lines), 2)
+            self.assertFalse(any(line.endswith("（") for line in lines))
+            self.assertFalse(any(line.startswith("）") for line in lines))
+
+    def test_grid_prefers_to_keep_parenthetical_phrase_together(self):
+        name = "钾镁煌斑岩(橄榄金云煌斑岩)"
+        self.assertEqual(
+            lithology._wrap_legend_label(name, 8.2),
+            ["钾镁煌斑岩", "(橄榄金云煌斑岩)"],
+        )
+
+    def test_excessive_legend_is_rejected_instead_of_growing_past_page(self):
+        names = [
+            name for name, (_face, pattern) in lithology.LITHOLOGY.items()
+            if pattern
+        ][:80]
+        layers = []
+        for index, name in enumerate(names, 1):
+            layer = _layer(0.1)
+            layer["no"] = str(index)
+            layer["lith"] = name
+            layers.append(layer)
+        for to_scale in (False, True):
+            with self.subTest(to_scale=to_scale):
+                with self.assertRaisesRegex(ValueError, "图例项目过多"):
+                    render_column(
+                        layers, page="A4", landscape=True,
+                        show_legend=True, to_scale=to_scale)
 
     def test_long_legend_name_is_wrapped_without_truncation(self):
         name = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉"
@@ -867,7 +1023,7 @@ class LegendCorrectnessTests(unittest.TestCase):
             render_column([layer], show_legend=True)
 
     def test_legend_item_width_cannot_shrink_below_standard_layout(self):
-        self.assertEqual(column.WIDTH_LIMITS["图例"], (3.0, 6.0))
+        self.assertEqual(column.WIDTH_LIMITS["图例"], (1.8, 6.0))
 
 
 if __name__ == "__main__":

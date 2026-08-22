@@ -1218,7 +1218,8 @@ def render_catalog_sheet(category, ncols=4):
                          "、".join(CATEGORIES))
 
     cell_w, cell_h, head_h = 2.75, 0.82, 0.42
-    sw, sh = 0.87, 0.58   # 22×15 mm，与花纹库一览一致
+    sw = L.LEGEND_SWATCH_WIDTH_MM / 25.4
+    sh = L.LEGEND_SWATCH_HEIGHT_MM / 25.4
     n_items = sum(len(items) for _s, items in groups)
     nrows = sum(-(-len(items) // ncols) for _s, items in groups)
     n_heads = sum(1 for s, _i in groups if s)
@@ -1253,10 +1254,17 @@ def render_catalog_sheet(category, ncols=4):
             if category == "基本花纹":
                 spec, face = spec_for(code, name), "#ffffff"
                 spec = spec[0]
-                L.paint(ax, verts, None, spec=spec, face=face,
-                        spacing=L.BASE_SPACING)
+                # 基本图形不是岩性层带，按标准原图元密度展示。
+                L.paint_legend_swatch(
+                    ax, verts, None, spec=spec, face=face,
+                    spacing=L.BASE_SPACING,
+                    height_mm=L.LEGEND_SWATCH_HEIGHT_MM,
+                    rows=L.LEGEND_REPRESENTATIVE_ROWS)
             else:
-                L.paint(ax, verts, name, spacing=L.BASE_SPACING)
+                L.paint_legend_swatch(
+                    ax, verts, name, spacing=L.BASE_SPACING,
+                    height_mm=L.LEGEND_SWATCH_HEIGHT_MM,
+                    rows=L.LEGEND_REPRESENTATIVE_ROWS)
             ax.add_patch(Polygon(verts, closed=True, facecolor="none",
                                  edgecolor="#333333", lw=0.7, zorder=3))
             # 最长标准名称为 16 个汉字，两行即可完整容纳。旧实现超过
