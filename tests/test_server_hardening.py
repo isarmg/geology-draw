@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
 
@@ -49,16 +50,23 @@ class WorkbookHardeningTests(unittest.TestCase):
         return path
 
     @staticmethod
-    def _replace_sheet_xml(path, old, new):
+    def _set_sheet_reference(path, element_name, old, new):
         replacement = path.with_name("replacement.xlsx")
         with zipfile.ZipFile(path, "r") as source:
             with zipfile.ZipFile(replacement, "w") as target:
                 for info in source.infolist():
                     data = source.read(info.filename)
                     if info.filename == "xl/worksheets/sheet1.xml":
-                        if old not in data:
+                        root = ET.fromstring(data)
+                        element = next((candidate for candidate in root.iter()
+                                        if candidate.tag.rsplit("}", 1)[-1]
+                                        == element_name
+                                        and candidate.attrib.get("ref") == old),
+                                       None)
+                        if element is None:
                             raise AssertionError("worksheet fixture did not match")
-                        data = data.replace(old, new, 1)
+                        element.set("ref", new)
+                        data = ET.tostring(root, encoding="utf-8")
                     target.writestr(info, data)
         os.replace(replacement, path)
 
@@ -71,11 +79,8 @@ class WorkbookHardeningTests(unittest.TestCase):
 
     def test_rejects_giant_merge_before_openpyxl_materialises_it(self):
         path = self._workbook(merged=True)
-        self._replace_sheet_xml(
-            path,
-            b'<mergeCell ref="A2:A3"/>',
-            b'<mergeCell ref="A2:XFD1048576"/>',
-        )
+        self._set_sheet_reference(
+            path, "mergeCell", "A2:A3", "A2:XFD1048576")
 
         with mock.patch("openpyxl.load_workbook") as loader:
             with self.assertRaisesRegex(ValueError, "合并区域|尺寸过大"):
@@ -84,11 +89,8 @@ class WorkbookHardeningTests(unittest.TestCase):
 
     def test_rejects_pathological_declared_dimension(self):
         path = self._workbook()
-        self._replace_sheet_xml(
-            path,
-            b'<dimension ref="A1:B3"/>',
-            b'<dimension ref="A1:XFD1048576"/>',
-        )
+        self._set_sheet_reference(
+            path, "dimension", "A1:B3", "A1:XFD1048576")
 
         with self.assertRaisesRegex(ValueError, "尺寸过大"):
             read_table(path)

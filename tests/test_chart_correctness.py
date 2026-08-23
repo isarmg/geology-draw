@@ -23,6 +23,11 @@ from strat.section import _layer_order, render_section
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _bit_count(value):
+    """Return the number of set bits on every supported Python version."""
+    return bin(value).count("1")
+
+
 def _layer(thickness=1.0, *, compress="", description="", **units):
     result = {
         "no": "1",
@@ -1038,7 +1043,7 @@ class LegendCorrectnessTests(unittest.TestCase):
                 masks = [next(iter(values)) for values in grouped.values()]
                 self.assertTrue(all(len(values) == 1
                                     for values in grouped.values()))
-                self.assertEqual(sorted(mask.bit_count() for mask in masks),
+                self.assertEqual(sorted(_bit_count(mask) for mask in masks),
                                  expected_counts)
                 occupied = 0
                 for mask in masks:
@@ -1070,7 +1075,7 @@ class LegendCorrectnessTests(unittest.TestCase):
         self.assertEqual(len(groups), 2)
         self.assertTrue(all(len(values) == 1 for values in groups.values()))
         masks = [next(iter(values)) for values in groups.values()]
-        self.assertEqual(sorted(mask.bit_count() for mask in masks), [3, 6])
+        self.assertEqual(sorted(_bit_count(mask) for mask in masks), [3, 6])
         self.assertEqual(masks[0] & masks[1], 0)
         self.assertEqual(masks[0] | masks[1], (1 << 9) - 1)
 
@@ -1109,7 +1114,7 @@ class LegendCorrectnessTests(unittest.TestCase):
             [item[0] for item in direct],
             ["横条", r"$\mathrm{Si}$", r"$\mathrm{Ca}$"])
         masks = [item[2] for item in direct]
-        self.assertEqual(sorted(mask.bit_count() for mask in masks),
+        self.assertEqual(sorted(_bit_count(mask) for mask in masks),
                          [3, 3, 6])
         self.assertEqual(masks[0] | masks[1] | masks[2], (1 << 12) - 1)
         self.assertFalse(masks[0] & masks[1])
@@ -1132,7 +1137,7 @@ class LegendCorrectnessTests(unittest.TestCase):
                     [element.get("marker") or element.get("shape")
                      for element in families], expected)
                 self.assertEqual(
-                    sorted(int(element["legend_slot_mask"]).bit_count()
+                    sorted(_bit_count(int(element["legend_slot_mask"]))
                            for element in families), [3, 3, 6])
 
     def test_shale_quality_and_contains_use_distinct_standard_quotas(self):
@@ -1396,10 +1401,10 @@ class LegendCorrectnessTests(unittest.TestCase):
                 self.assertTrue(all(len(masks) == 1
                                     for masks in groups.values()))
                 masks = [next(iter(value)) for value in groups.values()]
-                self.assertEqual(sorted(mask.bit_count() for mask in masks),
+                self.assertEqual(sorted(_bit_count(mask) for mask in masks),
                                  expected_counts)
                 self.assertEqual(
-                    next(iter(groups[1])).bit_count(), composition_count)
+                    _bit_count(next(iter(groups[1]))), composition_count)
                 occupied = 0
                 for mask in masks:
                     self.assertEqual(occupied & mask, 0)
