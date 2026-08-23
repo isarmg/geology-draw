@@ -44,6 +44,19 @@ _PATTERN_ROW_HEIGHT_CONTEXT = ContextVar(
 # 启用，页岩等标准明确采用密线的花纹会保留原始密度。
 _LEGEND_SWATCH_CONTEXT = ContextVar("legend_swatch", default=None)
 
+# Table 4's ``RPBP`` cells define an individual symbol, not a cropped sample
+# of the infinitely repeated rock pattern.  This flag is deliberately separate
+# from the normal legend context so column/section lithology swatches continue
+# to use their standard three representative rows.
+_LEGEND_SINGLE_MOTIF_CONTEXT = ContextVar(
+    "legend_single_motif", default=False)
+
+# Symbol geometry must clear the visible swatch frame, not merely remain
+# inside its mathematical clipping rectangle.  A quarter millimetre keeps
+# 0.1-mm standard strokes and the 0.7-pt frame from visually colliding.
+LEGEND_SYMBOL_CLEARANCE_MM = 0.25
+_LEGEND_SYMBOL_CLEARANCE_IN = LEGEND_SYMBOL_CLEARANCE_MM / 25.4
+
 
 def resolve_pattern_row_height_mm(value=PATTERN_ROW_HEIGHT_MM):
     """校验并返回花纹基础层高（毫米）。"""
@@ -92,6 +105,16 @@ def legend_swatch_scope(height_mm=10.0, rows=3):
         yield height, count
     finally:
         _LEGEND_SWATCH_CONTEXT.reset(token)
+
+
+@contextmanager
+def legend_single_motif_scope():
+    """Render one complete, physically centred basic-symbol motif."""
+    token = _LEGEND_SINGLE_MOTIF_CONTEXT.set(True)
+    try:
+        yield
+    finally:
+        _LEGEND_SINGLE_MOTIF_CONTEXT.reset(token)
 
 # 接触面与岩性花纹之间的最大单侧净空。接触线保持原有标准线宽；薄层会
 # 按图上高度自动收窄白色底衬，避免净空吞没花纹。
@@ -625,8 +648,153 @@ def _corners_proj(X0, X1, Y0, Y1, ux, uy):
     return min(vals), max(vals)
 
 
+def _legend_lattice_positions(lo, hi, step, phase=0.0,
+                              lower_margin=0.0, upper_margin=0.0):
+    """Return a centred, clipped one-dimensional legend lattice.
+
+    The old symbol primitives started every row at ``width / 4`` of one
+    grid cell.  That made the visible result depend on the swatch width:
+    staggered rows were shifted to the right and the final symbol was often
+    cut by the frame.  A legend is a representative symbol, so its lattice is
+    instead anchored at the physical centre of the swatch.  Integer phases
+    form the odd rows and half phases form the complementary even rows.
+
+    ``lower_margin``/``upper_margin`` are the physical glyph extents around
+    its anchor.  Filtering anchors with these margins prevents the frame from
+    clipping triangles, text markers and other wide symbols.
+    """
+    if step <= 1e-12 or hi <= lo:
+        return []
+    lower = lo + max(0.0, lower_margin)
+    upper = hi - max(0.0, upper_margin)
+    if upper < lower:
+        return [(lo + hi) / 2]
+    centre = (lo + hi) / 2
+    eps = 1e-10
+    first = math.ceil((lower - centre) / step - phase - eps)
+    last = math.floor((upper - centre) / step - phase + eps)
+    if first > last:
+        # A very sparse but still smaller-than-the-box glyph should remain
+        # visible once, at the nearest legal anchor to the box centre.
+        return [min(max(centre, lower), upper)]
+    return [centre + (index + phase) * step
+            for index in range(first, last + 1)]
+
+
+def _legend_lattice_anchors(lo, hi, step, phase, bounds,
+                            anchor_offset=0.0):
+    """Place a glyph lattice by physical centres and return draw anchors.
+
+    ``bounds`` are the complete glyph (or composite glyph) bounds relative to
+    a base anchor.  Several standard symbols such as Γ, L and bold variants
+    are not symmetric around their declared vector origin.  Centring those
+    origins therefore leaves the visible row shifted and can incorrectly
+    discard an edge symbol.  Build the lattice from the physical half-width,
+    then map each visual centre back to the primitive's drawing anchor.
+    """
+    lower, upper = bounds
+    centre_offset = (lower + upper) / 2
+    half_width = max(0.0, (upper - lower) / 2)
+    visual_centres = _legend_lattice_positions(
+        lo, hi, step, phase=phase,
+        lower_margin=half_width, upper_margin=half_width)
+    return [centre - centre_offset + anchor_offset
+            for centre in visual_centres]
+
+
+def _legend_row_positions(Y0, Y1, step, yoff=0.0,
+                          lower_margin=0.0, upper_margin=0.0,
+                          alternate_phase=None):
+    """Return ``(row_index, y)`` pairs for a canonical legend symbol array.
+
+    Normal arrays retain the repeat count implied by ``step`` but distribute
+    any spare room equally above and below.  If a glyph is taller than one
+    nominal band, only the row pitch is tightened; the glyph itself keeps its
+    standard physical size.
+
+    ``alternate_phase`` is used by patterns such as granite: phase 0 occupies
+    representative rows 1 and 3, while phase 1 occupies row 2.  This avoids
+    drawing two independent three-row arrays on top of one another.
+    """
+    height = Y1 - Y0
+    if step <= 1e-12 or height <= 0:
+        return []
+    context = _LEGEND_SWATCH_CONTEXT.get()
+    if alternate_phase is not None and context is not None:
+        row_count = max(1, int(context[1]))
+        band = height / row_count
+        parity = int(alternate_phase) % 2
+        return [
+            (index, Y0 + (index + 0.5) * band)
+            for index in range(row_count)
+            if index % 2 == parity
+        ]
+
+    # Match the repeat count of the original half-step-starting grid.
+    count = len(np.arange(Y0 + step / 2, Y1, step))
+    count = max(1, count)
+    centre = (Y0 + Y1) / 2
+    if count == 1:
+        pitch = 0.0
+    else:
+        safe_half_span = min(
+            centre - Y0 - max(0.0, lower_margin),
+            Y1 - centre - max(0.0, upper_margin),
+        )
+        pitch = min(step, max(0.0, 2 * safe_half_span / (count - 1)))
+    start = centre - (count - 1) * pitch / 2
+    shift = yoff * step
+    low_shift = (Y0 + max(0.0, lower_margin)) - start
+    high_shift = (Y1 - max(0.0, upper_margin)) - (
+        start + (count - 1) * pitch)
+    shift = min(max(shift, low_shift), high_shift)
+    return [(index, start + index * pitch + shift)
+            for index in range(count)]
+
+
+def _legend_shared_slot_positions(lo, hi, slots, slot_phase, row_index,
+                                  lower_margin=0.0, upper_margin=0.0,
+                                  slot_mask=0, slot_period=3):
+    """Select positions from one shared row of legend slots.
+
+    ``slot_mask`` is a compact row-major occupancy map.  It is used by
+    multi-family standards such as volcaniclastics, whose four columns must
+    obey 1:3 / 1:1:2 ratios without two independently centred lattices
+    colliding.  The historical phase-only form remains the default for
+    two-family alternating patterns such as feldspathic sandstone.
+    """
+    count = max(1, int(slots))
+    width = hi - lo
+    mask = int(slot_mask)
+    if mask:
+        period = max(1, int(slot_period))
+        semantic_row = int(row_index) % period
+        if _SHAPE_FLIP[0]:
+            semantic_row = period - 1 - semantic_row
+        row_mask = (mask >> (semantic_row * count)) \
+            & ((1 << count) - 1)
+        wanted_slots = {
+            index for index in range(count) if row_mask & (1 << index)
+        }
+    else:
+        wanted = (int(slot_phase) + int(row_index)) % 2
+        wanted_slots = {
+            index for index in range(count) if index % 2 == wanted
+        }
+    result = []
+    for index in range(count):
+        if index not in wanted_slots:
+            continue
+        value = lo + (index + 0.5) * width / count
+        if (value - lower_margin >= lo - 1e-10
+                and value + upper_margin <= hi + 1e-10):
+            result.append(value)
+    return result
+
+
 def _prim_lines(X0, X1, Y0, Y1, angle=0.0, spacing=1.0, dash=0.0, gap=0.0,
-                offset=0.0, phase=0.0, origin=0.5):
+                offset=0.0, phase=0.0, origin=0.5,
+                _legend_single_anchor=None):
     """phase：虚线沿线方向的起始相位（基准间距的倍数），点划线由两层
     错相的虚线叠成。origin：线族相对包围盒边的相位（间距的倍数）——
     缺省 0.5（首条线离边半个间距，小样上不与边框重合）；层理式花纹
@@ -635,6 +803,13 @@ def _prim_lines(X0, X1, Y0, Y1, angle=0.0, spacing=1.0, dash=0.0, gap=0.0,
     th = math.radians(angle)
     dx, dy = math.cos(th), math.sin(th)      # 线方向
     nx, ny = -dy, dx                          # 法向
+    if _legend_single_anchor is not None:
+        cx, cy = _legend_single_anchor
+        length = (dash * BASE_SPACING if dash and dash > 0
+                  else max(2.0 * _MM, min(spacing * BASE_SPACING,
+                                          5.0 * _MM)))
+        return [[(cx - length * dx / 2, cy - length * dy / 2),
+                 (cx + length * dx / 2, cy + length * dy / 2)]], []
     pmin, pmax = _corners_proj(X0, X1, Y0, Y1, nx, ny)   # 垂直方向范围
     qmin, qmax = _corners_proj(X0, X1, Y0, Y1, dx, dy)   # 沿线方向范围
     ext = 0.12                                # 英寸，向外溢出（由多边形裁剪）
@@ -662,7 +837,12 @@ def _prim_lines(X0, X1, Y0, Y1, angle=0.0, spacing=1.0, dash=0.0, gap=0.0,
 
 def _prim_markers(X0, X1, Y0, Y1, marker=".", spacing=1.0, size=2.0,
                   filled=True, stagger=True, xoff=0.0, yoff=0.0,
-                  xspacing=0.0):
+                  xspacing=0.0, _legend_center_x=False,
+                  _legend_center_y=False, _legend_alternate_y=None,
+                  _legend_group_x_bounds=None, _legend_phase_shift=0.0,
+                  legend_single=False, legend_slots=0,
+                  legend_slot_phase=0, legend_slot_mask=0,
+                  legend_slot_period=3, _legend_single_anchor=None):
     """点阵符号。xoff/yoff 为网格相位偏移（间距的倍数），用于把多层
     符号对齐到同一网格点上（如 ⊙ = 椭圆图形层 + 圆点层）。
     xspacing 为横向间距倍率（缺省与 spacing 相同），层理式花纹里
@@ -670,11 +850,66 @@ def _prim_markers(X0, X1, Y0, Y1, marker=".", spacing=1.0, size=2.0,
     s = spacing * BASE_SPACING
     sx = (xspacing or spacing) * BASE_SPACING
     xs, ys = [], []
-    for k, y in enumerate(np.arange(Y0 + s / 2, Y1, s)):
-        off = (sx / 2) if (stagger and k % 2) else 0.0
-        for x in np.arange(X0 + sx / 4 + off, X1, sx):
-            xs.append(x + xoff * sx)
-            ys.append(y + yoff * s)
+    # Matplotlib marker size is a diameter in points.  Include half the
+    # 0.55-pt outline so hollow markers also stay clear of the swatch frame.
+    radius = (max(0.0, float(size)) / 144.0 + 0.55 / 144.0
+              + _LEGEND_SYMBOL_CLEARANCE_IN)
+    if _legend_single_anchor is not None:
+        cx, cy = _legend_single_anchor
+        return [], [([cx], [cy], marker, filled, size)]
+    if _legend_center_y:
+        row_positions = _legend_row_positions(
+            Y0, Y1, s, yoff=yoff,
+            lower_margin=radius, upper_margin=radius,
+            alternate_phase=_legend_alternate_y)
+    else:
+        row_positions = list(enumerate(
+            np.arange(Y0 + s / 2, Y1, s) + yoff * s))
+    for k, y in row_positions:
+        if _legend_center_x:
+            local_bounds = (-radius, radius)
+            group_bounds = _legend_group_x_bounds or local_bounds
+            component_offset = (xoff * sx
+                                if _legend_group_x_bounds is not None else 0.0)
+            if legend_slots:
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centres = _legend_shared_slot_positions(
+                    X0, X1, legend_slots, legend_slot_phase, k,
+                    lower_margin=half_width, upper_margin=half_width,
+                    slot_mask=legend_slot_mask,
+                    slot_period=legend_slot_period)
+                row_xs = [centre - group_centre + component_offset
+                          for centre in centres]
+            elif legend_single:
+                # Sparse sedimentary qualifiers occupy one complementary
+                # anchor per course (left/right/left), rather than starting
+                # a second infinite lattice that yields 2-1-2 or 1-2-1.
+                side = -0.5 if k % 2 == 0 else 0.5
+                component_phase = xoff if abs(xoff) < 0.25 else 0.0
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centre = ((X0 + X1) / 2
+                          + (side + component_phase) * sx)
+                centre = min(max(centre, X0 + half_width),
+                             X1 - half_width)
+                row_xs = [centre - group_centre + component_offset]
+            else:
+                phase = (_legend_phase_shift
+                         + (0.5 if stagger and k % 2 else 0.0))
+                if _legend_group_x_bounds is None:
+                    phase += xoff
+                row_xs = _legend_lattice_anchors(
+                    X0, X1, sx, phase, group_bounds,
+                    anchor_offset=component_offset)
+        else:
+            off = (sx / 2) if (stagger and k % 2) else 0.0
+            row_xs = [x + xoff * sx
+                      for x in np.arange(X0 + sx / 4 + off, X1, sx)]
+        xs.extend(row_xs)
+        ys.extend([y] * len(row_xs))
     return [], [(xs, ys, marker, filled, size)]
 
 
@@ -698,6 +933,20 @@ def _arc_pts(a0, a1, r=0.5, cx=0.0, cy=0.0, n=10):
 def _sine_pts(n=12, periods=1.0, amp=0.5):
     xs = np.linspace(-0.5, 0.5, n + 1)
     return list(zip(xs, -amp * np.sin(2 * np.pi * periods * (xs + 0.5))))
+
+
+def _solid_lens_polys():
+    """Closed, densely inked chert-nodule lens used by RPSE021105."""
+    upper = _arc_pts(15, 165, 0.52, 0.0, -0.28)
+    lower = _arc_pts(195, 345, 0.52, 0.0, 0.28)
+    outline = upper + lower
+    outline.append(outline[0])
+    fills = []
+    for y, half_width in (
+            (-0.20, 0.20), (-0.14, 0.36), (-0.07, 0.46),
+            (0.00, 0.50), (0.07, 0.46), (0.14, 0.36), (0.20, 0.20)):
+        fills.append([(-half_width, y), (half_width, y)])
+    return [outline] + fills
 
 _SHAPES = {
     # 砾（扁椭圆）、角砾（空心三角）
@@ -743,6 +992,15 @@ _SHAPES = {
     "蛇纹符": [_arc_pts(0, 180, 0.42, 0.0, -0.05),
                [(0.0, 0.15), (0.0, -0.45)]],
     "燧石符": [_sine_pts(periods=1.0, amp=0.28), [(-0.3, 0.5), (0.3, -0.5)]],
+    # Table 4 basic-symbol motifs.  These are complete local glyphs rather
+    # than two unrelated repeated primitives.
+    "结核符": [[(-0.5, 0.05), (-0.32, -0.30), (0.10, -0.42),
+                (0.5, -0.08), (0.28, 0.32), (-0.18, 0.42),
+                (-0.5, 0.05)]],
+    "流纹质符": [[(-0.46, -0.46), (-0.08, 0.34)],
+                 [(0.08, 0.34), (0.46, -0.46)]],
+    "英安质符": [[(-0.46, -0.42), (-0.06, 0.30), (0.42, -0.40)],
+                 [(0.12, 0.04), (0.42, 0.30)]],
     "竖条":   [[(0.0, -0.5), (0.0, 0.5)]],
     "横条":   [[(-0.5, 0.0), (0.5, 0.0)]],
     "三竖":   [[(-0.4, -0.5), (-0.4, 0.5)], [(0.0, -0.5), (0.0, 0.5)],
@@ -767,10 +1025,7 @@ _SHAPES = {
                [(-0.1, -0.3), (0.5, -0.3)], [(-0.1, -0.1), (0.5, -0.1)],
                [(-0.1, 0.1), (0.5, 0.1)], [(-0.1, 0.3), (0.5, 0.3)]],
     # 燧石结核符（RPSE021105）：实心黑透镜体
-    "实心透镜": [_arc_pts(15, 165, 0.52, 0.0, -0.28) +
-                 _arc_pts(195, 345, 0.52, 0.0, 0.28)[:],
-                 [(-0.35, -0.12), (0.35, -0.12)], [(-0.45, 0.0), (0.45, 0.0)],
-                 [(-0.35, 0.12), (0.35, 0.12)]],
+    "实心透镜": _solid_lens_polys(),
     # —— GB/T 958 补充符号（火山碎屑、结晶结构、碱性岩等）——
     "F形":    [[(-0.35, 0.5), (-0.35, -0.5), (0.5, -0.5)],
                [(-0.35, 0.0), (0.35, 0.0)]],
@@ -815,7 +1070,13 @@ _SHAPES = {
 
 def _prim_shape(X0, X1, Y0, Y1, shape="椭圆", w=2.0, h=1.0, spacing=2.0,
                 stagger=True, tilt=0.0, bold=False, xoff=0.0, yoff=0.0,
-                xspacing=0.0):
+                xspacing=0.0, _legend_center_x=False,
+                _legend_center_y=False, _legend_alternate_y=None,
+                _legend_group_x_bounds=None, _legend_phase_shift=0.0,
+                legend_single=False, legend_slots=0,
+                legend_slot_phase=0, legend_slot_mask=0,
+                legend_slot_period=3, _legend_single_anchor=None,
+                _legend_explicit_positions=None):
     """标准图形阵：shape 图形名，w×h 毫米，spacing 网格间距倍率，
     tilt 旋转角（度），bold 加粗（双描），xoff/yoff 网格相位偏移，
     xspacing 横向间距倍率（缺省与 spacing 相同）。
@@ -829,25 +1090,102 @@ def _prim_shape(X0, X1, Y0, Y1, shape="椭圆", w=2.0, h=1.0, spacing=2.0,
     th = math.radians(tilt)
     ct, st = math.cos(th), math.sin(th)
     flip = -1.0 if _SHAPE_FLIP[0] else 1.0
+    templates = []
+    for poly in polys:
+        template = []
+        for px, py in poly:
+            px, py = px * wx, py * hy * flip
+            template.append((px * ct - py * st,
+                             px * st + py * ct))
+        templates.append(template)
+    offsets = [point for template in templates for point in template]
+    bold_offset = 0.1 * _MM if bold else 0.0
+    if bold:
+        offsets += [(x + bold_offset, y + bold_offset)
+                    for x, y in offsets]
+    min_x = (min(point[0] for point in offsets)
+             - _LEGEND_SYMBOL_CLEARANCE_IN)
+    max_x = (max(point[0] for point in offsets)
+             + _LEGEND_SYMBOL_CLEARANCE_IN)
+    min_y = (min(point[1] for point in offsets)
+             - _LEGEND_SYMBOL_CLEARANCE_IN)
+    max_y = (max(point[1] for point in offsets)
+             + _LEGEND_SYMBOL_CLEARANCE_IN)
+    if _legend_explicit_positions is not None:
+        row_positions = [
+            (index, point[1])
+            for index, point in enumerate(_legend_explicit_positions)
+        ]
+    elif _legend_single_anchor is not None:
+        row_positions = [(0, _legend_single_anchor[1])]
+    elif _legend_center_y:
+        centre_y = (min_y + max_y) / 2
+        half_height = (max_y - min_y) / 2
+        visual_rows = _legend_row_positions(
+            Y0, Y1, s, yoff=yoff,
+            lower_margin=half_height, upper_margin=half_height,
+            alternate_phase=_legend_alternate_y)
+        row_positions = [(index, y - centre_y)
+                         for index, y in visual_rows]
+    else:
+        row_positions = list(enumerate(
+            np.arange(Y0 + s / 2, Y1, s) + yoff * s))
     segs = []
-    for k, y in enumerate(np.arange(Y0 + s / 2, Y1, s)):
-        off = (sx / 2) if (stagger and k % 2) else 0.0
-        for x in np.arange(X0 + sx / 4 + off, X1, sx):
-            cx, cy = x + xoff * sx, y + yoff * s
-            for poly in polys:
-                pts = []
-                for px, py in poly:
-                    px, py = px * wx, py * hy * flip
-                    rx = px * ct - py * st
-                    ry = px * st + py * ct
-                    pts.append((cx + rx, cy + ry))
+    for k, cy in row_positions:
+        if _legend_explicit_positions is not None:
+            row_xs = [_legend_explicit_positions[k][0]]
+        elif _legend_single_anchor is not None:
+            row_xs = [_legend_single_anchor[0]]
+        elif _legend_center_x:
+            local_bounds = (min_x, max_x)
+            group_bounds = _legend_group_x_bounds or local_bounds
+            component_offset = (xoff * sx
+                                if _legend_group_x_bounds is not None else 0.0)
+            if legend_slots:
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centres = _legend_shared_slot_positions(
+                    X0, X1, legend_slots, legend_slot_phase, k,
+                    lower_margin=half_width, upper_margin=half_width,
+                    slot_mask=legend_slot_mask,
+                    slot_period=legend_slot_period)
+                row_xs = [centre - group_centre + component_offset
+                          for centre in centres]
+            elif legend_single:
+                side = -0.5 if k % 2 == 0 else 0.5
+                component_phase = xoff if abs(xoff) < 0.25 else 0.0
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centre = ((X0 + X1) / 2
+                          + (side + component_phase) * sx)
+                centre = min(max(centre, X0 + half_width),
+                             X1 - half_width)
+                row_xs = [centre - group_centre + component_offset]
+            else:
+                phase = (_legend_phase_shift
+                         + (0.5 if stagger and k % 2 else 0.0))
+                if _legend_group_x_bounds is None:
+                    phase += xoff
+                row_xs = _legend_lattice_anchors(
+                    X0, X1, sx, phase, group_bounds,
+                    anchor_offset=component_offset)
+        else:
+            off = (sx / 2) if (stagger and k % 2) else 0.0
+            row_xs = [x + xoff * sx
+                      for x in np.arange(X0 + sx / 4 + off, X1, sx)]
+        for cx in row_xs:
+            for template in templates:
+                pts = [(cx + px, cy + py) for px, py in template]
                 for a, b in zip(pts[:-1], pts[1:]):
                     segs.append([a, b])
                 if bold:   # 双描加粗：整体沿对角偏移 0.1 mm 再画一遍
-                    d = 0.1 * _MM
                     for a, b in zip(pts[:-1], pts[1:]):
-                        segs.append([(a[0] + d, a[1] + d),
-                                     (b[0] + d, b[1] + d)])
+                        segs.append([(a[0] + bold_offset,
+                                      a[1] + bold_offset),
+                                     (b[0] + bold_offset,
+                                      b[1] + bold_offset)])
     return segs, []
 
 
@@ -857,7 +1195,8 @@ _SHAPE_FLIP = [False]
 
 
 def _prim_brick(X0, X1, Y0, Y1, spacing=2.2, ratio=2.2, slant=0.0,
-                double=0.0, jdouble=0.0, jshort=0.0):
+                double=0.0, jdouble=0.0, jshort=0.0,
+                _legend_center_x=False):
     """砖形层理：spacing 层高倍率，ratio 砖宽/层高，slant 节理斜率
     （每层高的横向偏移倍数），double 层面双线间距（毫米，0 为单线，
     大理岩用），jdouble 节理双线间距（毫米，白云岩双斜线用），
@@ -874,8 +1213,18 @@ def _prim_brick(X0, X1, Y0, Y1, spacing=2.2, ratio=2.2, slant=0.0,
             segs.append([(X0, y + dd), (X1, y + dd)])
     j0 = jshort / 2 * s                       # 节理上下留白
     for k, y in enumerate(ys[:-1]):
-        off = (k % 2) * w / 2
-        for x in np.arange(X0 - w + off, X1 + w, w):
+        if _legend_center_x:
+            # Even courses have half bricks at both edges; odd courses have
+            # full bricks.  The accompanying staggered symbol lattice then
+            # falls at the exact centre of every visible brick.
+            phase = 0.5 if k % 2 == 0 else 0.0
+            joints = _legend_lattice_positions(
+                X0, X1, w, phase=phase,
+                lower_margin=-w, upper_margin=-w)
+        else:
+            off = (k % 2) * w / 2
+            joints = np.arange(X0 - w + off, X1 + w, w)
+        for x in joints:
             a = (x + slant * j0, y + j0)
             b = (x + slant * (s - j0), y + s - j0)
             segs.append([a, b])
@@ -884,16 +1233,90 @@ def _prim_brick(X0, X1, Y0, Y1, spacing=2.2, ratio=2.2, slant=0.0,
     return segs, []
 
 
-def _prim_ell(X0, X1, Y0, Y1, spacing=2.0, size=0.32, stagger=True):
+def _prim_ell(X0, X1, Y0, Y1, spacing=2.0, size=0.32, stagger=True,
+              xspacing=0.0, xoff=0.0,
+              _legend_center_x=False, _legend_center_y=False,
+              _legend_alternate_y=None, _legend_group_x_bounds=None,
+              _legend_phase_shift=0.0, legend_single=False,
+              legend_slots=0, legend_slot_phase=0, legend_slot_mask=0,
+              legend_slot_period=3, _legend_single_anchor=None):
     """钙质符号"∟"（GB/T 958）：短横+短竖组成的直角。"""
     s = spacing * BASE_SPACING
+    sx = (xspacing or spacing) * BASE_SPACING
     a = size * BASE_SPACING
+    # ``ell`` predates the generic vector-shape primitive but represents the
+    # same direction-sensitive GB/T symbol: visually it must remain ``└`` on
+    # both depth (y-down) and elevation/catalogue (y-up) axes.  ``paint`` sets
+    # _SHAPE_FLIP from the actual axis direction before invoking the pattern.
+    vertical = a if _SHAPE_FLIP[0] else -a
     segs = []
-    for k, y in enumerate(np.arange(Y0 + s / 2, Y1, s)):
-        off = (s / 2) if (stagger and k % 2) else 0.0
-        for x in np.arange(X0 + s / 4 + off, X1, s):
-            segs.append([(x, y), (x + a, y)])
-            segs.append([(x, y), (x, y - a)])
+    if _legend_single_anchor is not None:
+        row_positions = [(0, _legend_single_anchor[1])]
+    elif _legend_center_y:
+        row_positions = _legend_row_positions(
+            Y0, Y1, s,
+            lower_margin=a / 2 + _LEGEND_SYMBOL_CLEARANCE_IN,
+            upper_margin=a / 2 + _LEGEND_SYMBOL_CLEARANCE_IN,
+            alternate_phase=_legend_alternate_y)
+    else:
+        row_positions = list(enumerate(np.arange(Y0 + s / 2, Y1, s)))
+    for k, y in row_positions:
+        if _legend_single_anchor is not None:
+            row_xs = [_legend_single_anchor[0]]
+        elif _legend_center_x:
+            local_bounds = (-a / 2 - _LEGEND_SYMBOL_CLEARANCE_IN,
+                            a / 2 + _LEGEND_SYMBOL_CLEARANCE_IN)
+            group_bounds = _legend_group_x_bounds or local_bounds
+            component_offset = (xoff * sx
+                                if _legend_group_x_bounds is not None else 0.0)
+            if legend_slots:
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centres = _legend_shared_slot_positions(
+                    X0, X1, legend_slots, legend_slot_phase, k,
+                    lower_margin=half_width, upper_margin=half_width,
+                    slot_mask=legend_slot_mask,
+                    slot_period=legend_slot_period)
+                row_xs = [centre - group_centre + component_offset
+                          for centre in centres]
+            elif legend_single:
+                side = -0.5 if k % 2 == 0 else 0.5
+                group_min, group_max = group_bounds
+                group_centre = (group_min + group_max) / 2
+                half_width = (group_max - group_min) / 2
+                centre = (X0 + X1) / 2 + side * sx
+                centre = min(max(centre, X0 + half_width),
+                             X1 - half_width)
+                row_xs = [centre - group_centre + component_offset]
+            else:
+                phase = (_legend_phase_shift
+                         + (0.5 if stagger and k % 2 else 0.0))
+                if _legend_group_x_bounds is None:
+                    phase += xoff
+                row_xs = _legend_lattice_anchors(
+                    X0, X1, sx, phase, group_bounds,
+                    anchor_offset=component_offset)
+        else:
+            off = (sx / 2) if (stagger and k % 2) else 0.0
+            row_xs = (np.arange(X0 + sx / 4 + off, X1, sx)
+                      + xoff * sx)
+        for cx in row_xs:
+            if (_legend_center_x or _legend_center_y
+                    or _legend_single_anchor is not None):
+                # The historical anchor was the lower-left corner of ∟, so
+                # placing that anchor on a grid point made the visible glyph
+                # sit half its width to the right and half its height below
+                # every other symbol.  Legend lattices represent visual
+                # centres: keep the same ∟ orientation but centre its actual
+                # physical bounds on (cx, y).
+                x = cx - a / 2
+                baseline = y - vertical / 2
+            else:
+                x = cx
+                baseline = y
+            segs.append([(x, baseline), (x + a, baseline)])
+            segs.append([(x, baseline), (x, baseline + vertical)])
     return segs, []
 
 
@@ -1094,7 +1517,17 @@ def _prim_rows(X0, X1, Y0, Y1, heights=None, rows=None, spacing=1.0):
                 if not prim:
                     continue
                 params = {k: v for k, v in el.items()
-                          if k not in ("type", "color", "lw")}
+                          if k not in ("type", "color", "lw",
+                                       "motif_x_mm", "motif_y_mm",
+                                       "legend_group",
+                                       "legend_stagger",
+                                       "legend_center_once",
+                                       "legend_course_boundary")}
+                if (_LEGEND_SWATCH_CONTEXT.get() is not None
+                        and el.get("type") in (
+                            "markers", "dots", "shape", "ell")
+                        and "legend_stagger" in el):
+                    params["stagger"] = bool(el["legend_stagger"])
                 s, m = prim(X0, X1, cy0, cy1, **params)
                 segs += s
                 marks += m
@@ -1117,16 +1550,35 @@ _PRIM_PARAMS = {
     "lines":   {"angle", "spacing", "dash", "gap", "offset", "phase",
                 "origin", "color", "lw"},
     "markers": {"marker", "spacing", "xspacing", "size", "filled", "stagger",
-                "xoff", "yoff", "color"},
+                "xoff", "yoff", "legend_single", "legend_slots",
+                "legend_slot_phase", "legend_slot_mask",
+                "legend_slot_period", "legend_group",
+                "legend_stagger",
+                "motif_x_mm", "motif_y_mm",
+                "legend_center_once", "color"},
     "dots":    {"marker", "spacing", "xspacing", "size", "filled", "stagger",
-                "xoff", "yoff", "color"},
+                "xoff", "yoff", "legend_single", "legend_slots",
+                "legend_slot_phase", "legend_slot_mask",
+                "legend_slot_period", "legend_group",
+                "legend_stagger",
+                "motif_x_mm", "motif_y_mm",
+                "legend_center_once", "color"},
     "brick":   {"spacing", "ratio", "slant", "double", "jdouble", "jshort",
                 "color", "lw"},
-    "ell":     {"spacing", "size", "stagger", "color", "lw"},
+    "ell":     {"spacing", "xspacing", "size", "stagger", "xoff",
+                "legend_single", "legend_slots", "legend_slot_phase",
+                "legend_slot_mask", "legend_slot_period", "legend_group",
+                "legend_stagger",
+                "motif_x_mm", "color", "lw"},
     "wave":    {"spacing", "amp", "wavelength", "dash", "gap", "yoff",
                 "color", "lw"},
     "shape":   {"shape", "w", "h", "spacing", "xspacing", "stagger", "tilt",
-                "bold", "xoff", "yoff", "color", "lw"},
+                "bold", "xoff", "yoff", "legend_single", "legend_slots",
+                "legend_slot_phase", "legend_slot_mask",
+                "legend_slot_period", "legend_group",
+                "legend_stagger",
+                "motif_x_mm", "motif_y_mm",
+                "legend_center_once", "legend_course_boundary", "color", "lw"},
     "rows":    {"heights", "rows", "spacing"},
 }
 
@@ -1145,6 +1597,7 @@ _SPEC_POSITIVE = {
     "size": (0.0, 100.0),
     "ratio": (0.0, 100.0),
     "wavelength": (0.0, 100.0),
+    "legend_slots": (0.0, 20.0),
 }
 _SPEC_NONNEGATIVE = {
     "dash": (0.0, 100.0),
@@ -1163,6 +1616,9 @@ _SPEC_SIGNED = {
     "tilt": (-3600.0, 3600.0),
     "xoff": (-100.0, 100.0),
     "yoff": (-100.0, 100.0),
+    "legend_slot_phase": (-20.0, 20.0),
+    "motif_x_mm": (-50.0, 50.0),
+    "motif_y_mm": (-50.0, 50.0),
 }
 
 
@@ -1237,7 +1693,24 @@ def normalize_spec(spec, where="花纹"):
 
         for key, value in el.items():
             field = f"{location} 的 {key}"
-            if key in _SPEC_POSITIVE:
+            if key in ("legend_slots", "legend_slot_phase",
+                       "legend_slot_mask", "legend_slot_period",
+                       "legend_group"):
+                if key in ("legend_slots", "legend_slot_period"):
+                    limits = (1.0, 20.0)
+                elif key == "legend_slot_mask":
+                    limits = (0.0, float((1 << 60) - 1))
+                elif key == "legend_group":
+                    limits = (1.0, 1000.0)
+                else:
+                    limits = (-20.0, 20.0)
+                number = _spec_number(value, field, limits,
+                                      allow_zero=(key not in (
+                                          "legend_slots", "legend_slot_period",
+                                          "legend_group")))
+                if number != int(number):
+                    raise ValueError(f"{field} 应是整数")
+            elif key in _SPEC_POSITIVE:
                 _spec_number(value, field, _SPEC_POSITIVE[key],
                              allow_zero=False)
             elif key == "xspacing":
@@ -1249,7 +1722,9 @@ def normalize_spec(spec, where="花纹"):
                 _spec_number(value, field, _SPEC_SIGNED[key])
             elif key == "jshort":
                 _spec_number(value, field, (0.0, 1.0))
-            elif key in ("filled", "stagger", "bold"):
+            elif key in ("filled", "stagger", "bold", "legend_single",
+                         "legend_stagger",
+                         "legend_center_once", "legend_course_boundary"):
                 if not isinstance(value, bool):
                     raise ValueError(f"{field} 应是布尔值")
             elif key in ("marker", "shape"):
@@ -1257,6 +1732,22 @@ def normalize_spec(spec, where="花纹"):
                         or len(value) > _SPEC_MAX_TEXT):
                     raise ValueError(
                         f"{field} 应是 1–{_SPEC_MAX_TEXT} 个字符的文本")
+
+        if "legend_slot_mask" in el:
+            mask = int(el["legend_slot_mask"])
+            if mask <= 0:
+                raise ValueError(
+                    f"{location} 的 legend_slot_mask 必须是非零占位掩码")
+            if "legend_slots" not in el:
+                raise ValueError(
+                    f"{location} 使用 legend_slot_mask 时必须同时指定 "
+                    "legend_slots")
+            slots = int(el["legend_slots"])
+            period = int(el.get("legend_slot_period", 3))
+            if mask >= (1 << (slots * period)):
+                raise ValueError(
+                    f"{location} 的 legend_slot_mask 超出 "
+                    f"{slots} 列 × {period} 行矩阵范围")
 
         if typ == "lines" and el.get("dash", 0) > 0:
             if el.get("dash", 0) + el.get("gap", 0) <= 0:
@@ -1347,8 +1838,10 @@ def _fixed_layer_row_spec(spec, row_height_mm=PATTERN_ROW_HEIGHT_MM,
                           preserve_dense=False):
     """把一幅标准层状花纹的基础层高统一为指定毫米值。
 
-    复合花纹内稀疏符号与基础层的倍数关系保持不变；行内横向间距
-    保持原值，因此只增加纵向重复层数，不会把符号横向挤密。
+    主图保留复合花纹各图元的原始纵向比例。图例模式则把所有离散
+    markers/shape 锚到同一组代表层中心；标准规定的 1:3、1:2 等数量
+    关系由横向 ``xspacing`` 表达，不能靠漏画某个水平层带来表达。
+    行内横向间距始终保持原值。
     """
     carriers = [
         value for el in spec
@@ -1381,9 +1874,13 @@ def _fixed_layer_row_spec(spec, row_height_mm=PATTERN_ROW_HEIGHT_MM,
                           "shape"):
             continue
         original = float(el.get("spacing", 1.0))
-        if typ in ("markers", "dots", "shape") and not el.get("xspacing"):
+        if typ in ("markers", "dots", "shape", "ell") \
+                and not el.get("xspacing"):
             el["xspacing"] = original
-        el["spacing"] = original * factor
+        if preserve_dense and typ in ("markers", "dots", "shape", "ell"):
+            el["spacing"] = row_height_in / BASE_SPACING
+        else:
+            el["spacing"] = original * factor
     return out
 
 
@@ -1398,6 +1895,197 @@ def _centered_pattern_phase(height, pitch):
     if math.isclose(remainder, pitch, rel_tol=0.0, abs_tol=1e-9):
         remainder = 0.0
     return remainder / 2
+
+
+def _alternating_symbol_spacings(spec):
+    """Find symbol pitches whose elements alternate on half-row phases.
+
+    Granite-family patterns, for example, combine one element at ``yoff=0``
+    with another at ``yoff=0.5``.  In the standard plate these occupy rows
+    1/3 and row 2 respectively; treating both as independent arrays creates
+    five apparent rows and puts the last symbol on the frame.
+    """
+    zero_phase = set()
+    half_phase = set()
+    for element in spec or []:
+        if (not isinstance(element, dict)
+                or element.get("type") not in ("markers", "dots", "shape")):
+            continue
+        spacing = round(float(element.get("spacing", 1.0)), 12)
+        phase = float(element.get("yoff", 0.0)) % 1.0
+        if math.isclose(phase, 0.0, abs_tol=1e-9):
+            zero_phase.add(spacing)
+        elif math.isclose(phase, 0.5, abs_tol=1e-9):
+            half_phase.add(spacing)
+    return zero_phase & half_phase
+
+
+def _legend_element_bounds(element):
+    """Return physical ``(xmin, xmax, ymin, ymax)`` around a draw anchor."""
+    typ = element.get("type")
+    if typ in ("markers", "dots"):
+        radius = max(0.0, float(element.get("size", 2.0))) / 144.0
+        radius += 0.55 / 144.0 + _LEGEND_SYMBOL_CLEARANCE_IN
+        return -radius, radius, -radius, radius
+    if typ == "ell":
+        radius = float(element.get("size", 0.32)) * BASE_SPACING / 2
+        radius += _LEGEND_SYMBOL_CLEARANCE_IN
+        return -radius, radius, -radius, radius
+    if typ != "shape":
+        return 0.0, 0.0, 0.0, 0.0
+    polys = _SHAPES.get(element.get("shape", "椭圆")) or []
+    if not polys:
+        return 0.0, 0.0, 0.0, 0.0
+    wx = float(element.get("w", 2.0)) * _MM
+    hy = float(element.get("h", 1.0)) * _MM
+    angle = math.radians(float(element.get("tilt", 0.0)))
+    ct, st = math.cos(angle), math.sin(angle)
+    flip = -1.0 if _SHAPE_FLIP[0] else 1.0
+    points = []
+    for poly in polys:
+        for px, py in poly:
+            px, py = px * wx, py * hy * flip
+            points.append((px * ct - py * st, px * st + py * ct))
+    if element.get("bold"):
+        bold_offset = 0.1 * _MM
+        points += [(x + bold_offset, y + bold_offset) for x, y in points]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    clearance = _LEGEND_SYMBOL_CLEARANCE_IN
+    return (min(xs) - clearance, max(xs) + clearance,
+            min(ys) - clearance, max(ys) + clearance)
+
+
+def _legend_element_x_bounds(element):
+    """Return a symbol element's physical x bounds around its grid origin."""
+    xmin, xmax, _ymin, _ymax = _legend_element_bounds(element)
+    return xmin, xmax
+
+
+def _legend_stagger_value(element):
+    """Return swatch-only staggering without changing the chart pattern."""
+    return bool(element.get(
+        "legend_stagger", element.get("stagger", True)))
+
+
+def _legend_single_motif_anchors(spec, width, height):
+    """Return one shared, centred anchor for every discrete motif component."""
+    components = []
+    for index, element in enumerate(spec or []):
+        if (not isinstance(element, dict)
+                or element.get("type") not in (
+                    "markers", "dots", "shape", "ell")):
+            continue
+        spacing = float(element.get("spacing", 1.0))
+        xspacing = float(element.get("xspacing") or spacing)
+        xoff = (float(element["motif_x_mm"]) * _MM
+                if "motif_x_mm" in element
+                else (float(element.get("xoff", 0.0))
+                      * xspacing * BASE_SPACING))
+        yoff = (float(element["motif_y_mm"]) * _MM
+                if "motif_y_mm" in element
+                else (float(element.get("yoff", 0.0))
+                      * spacing * BASE_SPACING))
+        xmin, xmax, ymin, ymax = _legend_element_bounds(element)
+        components.append((
+            index, xoff, yoff,
+            xmin + xoff, xmax + xoff,
+            ymin + yoff, ymax + yoff,
+        ))
+    if not components:
+        return {}
+    motif_xmin = min(item[3] for item in components)
+    motif_xmax = max(item[4] for item in components)
+    motif_ymin = min(item[5] for item in components)
+    motif_ymax = max(item[6] for item in components)
+    base_x = width / 2 - (motif_xmin + motif_xmax) / 2
+    base_y = height / 2 - (motif_ymin + motif_ymax) / 2
+    return {
+        index: (base_x + xoff, base_y + yoff)
+        for index, xoff, yoff, *_bounds in components
+    }
+
+
+def _legend_symbol_group_bounds(spec):
+    """Return shared bounds for multi-primitive symbols in a legend.
+
+    A quartz three-dot sign or an oolite circle-plus-dot is built from
+    several primitives.  Filtering those primitives independently leaves
+    stray dots or half a cluster at the frame.  Elements on the same grid
+    whose phases are within a quarter cell are therefore clipped as one
+    physical glyph.
+    """
+    # Some standards allocate several different symbol families to one
+    # explicit four-column matrix.  ``legend_group`` identifies primitives
+    # that make one physical token in that matrix (for example the four-dot
+    # volcaniclastics sign).  Their internal offsets must be bounded as a
+    # whole before a slot is accepted near the frame.
+    explicit_groups = {}
+    explicit_indices = set()
+    for index, element in enumerate(spec or []):
+        if (not isinstance(element, dict)
+                or element.get("type") not in (
+                    "markers", "dots", "shape", "ell")
+                or "legend_group" not in element):
+            continue
+        spacing = float(element.get("spacing", 1.0))
+        xspacing = float(element.get("xspacing") or spacing)
+        offset = (float(element["motif_x_mm"]) * _MM
+                  if "motif_x_mm" in element
+                  else float(element.get("xoff", 0.0))
+                  * xspacing * BASE_SPACING)
+        explicit_groups.setdefault(int(element["legend_group"]), []).append(
+            (index, offset, element))
+        explicit_indices.add(index)
+
+    result = {}
+    for entries in explicit_groups.values():
+        bounds = []
+        for _index, offset, element in entries:
+            left, right = _legend_element_x_bounds(element)
+            bounds.append((offset + left, offset + right))
+        group_bounds = (min(item[0] for item in bounds),
+                        max(item[1] for item in bounds))
+        for index, _offset, _element in entries:
+            result[index] = group_bounds
+
+    grids = {}
+    for index, element in enumerate(spec or []):
+        if (not isinstance(element, dict)
+                or element.get("type") not in (
+                    "markers", "dots", "shape", "ell")
+                or index in explicit_indices):
+            continue
+        spacing = float(element.get("spacing", 1.0))
+        xspacing = float(element.get("xspacing") or spacing)
+        stagger = _legend_stagger_value(element)
+        key = (round(xspacing, 12), round(spacing, 12), stagger)
+        grids.setdefault(key, []).append((
+            index, float(element.get("xoff", 0.0)), element))
+
+    for (xspacing, _spacing, _stagger), entries in grids.items():
+        entries.sort(key=lambda item: item[1])
+        clusters = []
+        for entry in entries:
+            if (not clusters
+                    or entry[1] - clusters[-1][-1][1] > 0.250000001):
+                clusters.append([entry])
+            else:
+                clusters[-1].append(entry)
+        step = xspacing * BASE_SPACING
+        for cluster in clusters:
+            if len(cluster) < 2:
+                continue
+            bounds = []
+            for _index, phase, element in cluster:
+                left, right = _legend_element_x_bounds(element)
+                bounds.append((phase * step + left,
+                               phase * step + right))
+            group_bounds = (min(item[0] for item in bounds),
+                            max(item[1] for item in bounds))
+            for index, _phase, _element in cluster:
+                result[index] = group_bounds
+    return result
 
 
 def build_spec_pattern(spec, *, fixed_layer_rows=False):
@@ -1456,6 +2144,11 @@ def build_spec_pattern(spec, *, fixed_layer_rows=False):
         sx, sy = dx / BASE_SPACING, dy / BASE_SPACING   # 单位英寸对应的数据跨度
         X0, Y0 = x0 / sx, y0 / sy                       # 包围盒原点（英寸）
         W, H = (x1 - x0) / sx, (y1 - y0) / sy           # 包围盒尺寸（英寸）
+        single_motif = bool(
+            swatch is not None and _LEGEND_SINGLE_MOTIF_CONTEXT.get())
+        single_motif_anchors = (
+            _legend_single_motif_anchors(active_spec, W, H)
+            if single_motif else {})
         phase_y = _centered_pattern_phase(H, vertical_pitch)
         # 复合页岩小样要同时保留密线的标准节距，又让 Ca/Si/C
         # 等三行修饰符号独立居中。两组共用密线相位会令符号
@@ -1469,15 +2162,138 @@ def build_spec_pattern(spec, *, fixed_layer_rows=False):
         ]
         regular_phase_y = _centered_pattern_phase(
             H, _vertical_pitch_in(regular_spec)) if regular_spec else 0.0
+        canonical_symbol_rows = bool(swatch is not None and uses_legend_rows)
+        alternating_spacings = (
+            _alternating_symbol_spacings(active_spec)
+            if canonical_symbol_rows else set())
+        brick_element = next((
+            element for element in active_spec
+            if isinstance(element, dict) and element.get("type") == "brick"
+        ), None)
+        brick_cell_spacing = (
+            float(brick_element.get("ratio", 2.2))
+            if brick_element is not None else None)
+        symbol_group_bounds = (
+            _legend_symbol_group_bounds(active_spec)
+            if swatch is not None else {})
+        legend_phase_shift = 0.0
+        if canonical_symbol_rows and brick_cell_spacing is None:
+            for index, element in enumerate(active_spec):
+                if (not isinstance(element, dict)
+                        or element.get("type") not in (
+                            "markers", "dots", "shape", "ell")
+                        or not _legend_stagger_value(element)
+                        or not math.isclose(
+                            float(element.get("xoff", 0.0)) % 1.0,
+                            0.0, abs_tol=1e-9)):
+                    continue
+                xstep = float(
+                    element.get("xspacing")
+                    or element.get("spacing", 1.0)) * BASE_SPACING
+                bounds = symbol_group_bounds.get(
+                    index, _legend_element_x_bounds(element))
+                half_width = (bounds[1] - bounds[0]) / 2
+                count_integer = len(_legend_lattice_positions(
+                    0.0, W, xstep, phase=0.0,
+                    lower_margin=half_width, upper_margin=half_width))
+                count_half = len(_legend_lattice_positions(
+                    0.0, W, xstep, phase=0.5,
+                    lower_margin=half_width, upper_margin=half_width))
+                # Table 4 uses the denser row at the top and bottom and the
+                # complementary sparse row in the middle.  Depending on the
+                # glyph width and pitch, that denser phase may be integer or
+                # half-integer; choose it from the actual physical bounds.
+                if count_half > count_integer:
+                    legend_phase_shift = 0.5
+                break
         all_segs, all_marks, all_csegs = [], [], []
-        for el in active_spec:
+        for element_index, el in enumerate(active_spec):
             prim = _PRIMS.get(el.get("type"))
             if not prim:
                 continue
+            typ = el.get("type")
             color = el.get("color")
             lw = el.get("lw")
             params = {k: v for k, v in el.items()
-                      if k not in ("type", "color", "lw")}
+                      if k not in ("type", "color", "lw",
+                                   "motif_x_mm", "motif_y_mm",
+                                   "legend_group",
+                                   "legend_stagger",
+                                   "legend_center_once",
+                                   "legend_course_boundary")}
+            if (swatch is not None
+                    and typ in ("markers", "dots", "shape", "ell")
+                    and "legend_stagger" in el):
+                params["stagger"] = bool(el["legend_stagger"])
+            if single_motif:
+                if element_index in single_motif_anchors:
+                    params["_legend_single_anchor"] = (
+                        single_motif_anchors[element_index])
+                elif typ == "lines":
+                    params["_legend_single_anchor"] = (W / 2, H / 2)
+            elif swatch is not None and el.get("legend_center_once"):
+                xmin, xmax, ymin, ymax = _legend_element_bounds(el)
+                params["_legend_single_anchor"] = (
+                    W / 2 - (xmin + xmax) / 2,
+                    H / 2 - (ymin + ymax) / 2,
+                )
+            if (canonical_symbol_rows and brick_cell_spacing is not None
+                    and typ == "shape"
+                    and el.get("legend_course_boundary")):
+                xmin, xmax, ymin, ymax = _legend_element_bounds(el)
+                pitch = brick_cell_spacing * BASE_SPACING
+                row_count = max(1, int(swatch[1]))
+                positions = []
+                for boundary in range(1, row_count):
+                    phase = 0.5 if boundary % 2 else 0.0
+                    anchors = _legend_lattice_anchors(
+                        0.0, W, pitch, phase, (xmin, xmax))
+                    visual_boundary = (
+                        row_count - boundary
+                        if _SHAPE_FLIP[0] else boundary)
+                    visual_y = H * visual_boundary / row_count
+                    anchor_y = visual_y - (ymin + ymax) / 2
+                    positions.extend((anchor_x, anchor_y)
+                                     for anchor_x in anchors)
+                params["_legend_explicit_positions"] = positions
+            # All legend symbol grids share a centred horizontal origin.
+            # Canonical built-in patterns additionally centre their vertical
+            # rows and collapse half-row alternation to the three standard
+            # representative bands.  Explicit user ``rows`` retain their
+            # original vertical semantics.
+            if swatch is not None and typ in (
+                    "markers", "dots", "shape", "ell", "brick"):
+                params["_legend_center_x"] = True
+                if (brick_cell_spacing is None
+                        and element_index in symbol_group_bounds):
+                    params["_legend_group_x_bounds"] = (
+                        symbol_group_bounds[element_index])
+                    if ("legend_group" in el
+                            and "motif_x_mm" in el):
+                        xspacing = float(
+                            el.get("xspacing") or el.get("spacing", 1.0))
+                        params["xoff"] = (
+                            float(el["motif_x_mm"]) * _MM
+                            / (xspacing * BASE_SPACING))
+            if (canonical_symbol_rows and brick_cell_spacing is not None
+                    and typ in ("markers", "dots", "shape", "ell")):
+                # Brick modifiers use the brick's own cell lattice.  Generic
+                # qualifier spacing otherwise puts Fe/Si/C directly on the
+                # vertical joints.  Cell centres are phase 0 in courses 1/3
+                # and phase 1/2 in course 2, i.e. the standard 1-2-1 layout.
+                params["xspacing"] = brick_cell_spacing
+                params["xoff"] = 0.0
+                params["stagger"] = True
+            if canonical_symbol_rows and typ in (
+                    "markers", "dots", "shape", "ell"):
+                params["_legend_center_y"] = True
+                params["_legend_phase_shift"] = legend_phase_shift
+                spacing_key = round(float(el.get("spacing", 1.0)), 12)
+                if spacing_key in alternating_spacings:
+                    yphase = float(el.get("yoff", 0.0)) % 1.0
+                    params["_legend_alternate_y"] = (
+                        1 if math.isclose(yphase, 0.5, abs_tol=1e-9)
+                        else 0)
             segs, marks = prim(0.0, W, 0.0, H, **params)
             element_phase_y = phase_y
             if dense_swatch:
@@ -1486,6 +2302,16 @@ def build_spec_pattern(spec, *, fixed_layer_rows=False):
                         H, _vertical_pitch_in([el]))
                 else:
                     element_phase_y = regular_phase_y
+            if canonical_symbol_rows and typ in (
+                    "markers", "dots", "shape", "ell"):
+                # These primitives have already centred and clipped their
+                # physical glyph rows; applying the carrier phase a second
+                # time would move them off the band centres.
+                element_phase_y = 0.0
+            if single_motif:
+                # Motif anchors are already absolute within the 15×10 mm
+                # sample; a pattern-repeat phase would displace the symbol.
+                element_phase_y = 0.0
             out = [[((a[0] + X0) * sx,
                      (a[1] + element_phase_y + Y0) * sy),
                     ((b[0] + X0) * sx,
@@ -1605,16 +2431,16 @@ _BUILTIN_SPECS = {
     # 粗砂 0.8、中砂 0.6、细砂 0.4、粉砂 0.25 mm（1 mm≈2.835 磅）
     "sst_gb":     [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
                    {"type": "markers", "marker": ".", "spacing": 1.6,
-                    "xspacing": 1.1, "size": 1.7}],
+                    "xspacing": 1.6, "size": 1.7}],
     "sst_c":      [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
                    {"type": "markers", "marker": ".", "spacing": 1.6,
-                    "xspacing": 1.3, "size": 2.3}],
+                    "xspacing": 1.6, "size": 2.3}],
     "sst_m":      [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
                    {"type": "markers", "marker": ".", "spacing": 1.6,
-                    "xspacing": 1.1, "size": 1.7}],
+                    "xspacing": 1.6, "size": 1.7}],
     "sst_f":      [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
                    {"type": "markers", "marker": ".", "spacing": 1.6,
-                    "xspacing": 0.9, "size": 1.15}],
+                    "xspacing": 1.6, "size": 1.15}],
     # 石英砂岩=层理线+点与∴相间（RPSE021026）；长石砂岩=点与N相间
     # （021027，附录 A.2.3 注 3：长石与砂符号 1:1）
     "sst_qz":     [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
@@ -1624,9 +2450,11 @@ _BUILTIN_SPECS = {
                      for e in _cluster3(1.6, 1.7)],
     "sst_fsp":    [{"type": "lines", "angle": 0, "spacing": 1.6, "origin": 0},
                    {"type": "markers", "marker": ".", "spacing": 1.6,
-                    "xspacing": 2.4, "size": 1.7, "xoff": 0.5},
+                    "xspacing": 2.4, "size": 1.7, "xoff": 0.5,
+                    "legend_slots": 4, "legend_slot_phase": 1},
                    {"type": "shape", "shape": "N形", "w": 1.4, "h": 1.8,
-                    "spacing": 1.6, "xspacing": 2.4}],
+                    "spacing": 1.6, "xspacing": 2.4,
+                    "legend_slots": 4, "legend_slot_phase": 0}],
     # 粉砂岩=层理线+成对细点“‥”（RPSE021042，点径 0.25 mm）
     "siltstone_gb": [{"type": "lines", "angle": 0, "spacing": 1.6,
                       "origin": 0},
@@ -1638,7 +2466,7 @@ _BUILTIN_SPECS = {
     "mudstone_gb": [{"type": "lines", "angle": 0, "spacing": 1.6,
                      "origin": 0},
                     {"type": "shape", "shape": "横条", "w": 2.0, "h": 0.2,
-                     "spacing": 1.6, "xspacing": 1.8}],
+                     "spacing": 1.6, "xspacing": 2.0}],
     # 页岩=细密横线（RPSE021051）
     # 图例中 10 mm 高小样约显示 8–9 条密线，与表 4 RPSE021051
     # 图版接近；这是连续底纹，不归一为 3 个代表层。
@@ -1680,7 +2508,8 @@ _BUILTIN_SPECS = {
     # 含燧石结核灰岩=砖+实心黑透镜体 3×1（RPSE021105）
     "ls_chert":   [{"type": "brick", "spacing": 2.0, "ratio": 3.2},
                    {"type": "shape", "shape": "实心透镜", "w": 2.8, "h": 1.0,
-                    "spacing": 2.0, "xspacing": 3.2, "bold": True}],
+                    "spacing": 2.0, "xspacing": 3.2, "bold": True,
+                    "legend_course_boundary": True}],
     # 条带状泥灰岩=泥灰岩+波折线（参 RPSE021106 条带状灰岩）
     "marl_band":  [{"type": "brick", "spacing": 2.2, "ratio": 2.6,
                     "slant": 0.55},
@@ -2044,58 +2873,207 @@ def _norm3(res):
     return (res[0], res[1], res[2] if len(res) > 2 else [])
 
 
-def _composite_pattern(base_patt, overlay_spec):
+_COMPOSITE_DISCRETE_TYPES = frozenset(("markers", "dots", "shape", "ell"))
+
+
+def _composite_discrete_families(spec):
+    """Return ordered semantic families from an existing legend spec.
+
+    New GB patterns identify a family with ``legend_group``.  Older built-in
+    two-component patterns use complementary ``legend_slot_phase`` values,
+    while multi-primitive glyphs such as the quartz three-dot sign share one
+    bounded lattice.  Recognising all three forms prevents a later modifier
+    from collapsing an already-composite base into one overlapping token.
+    """
+    spec = list(spec or [])
+    bounds = _legend_symbol_group_bounds(spec)
+    keyed = {}
+    for index, element in enumerate(spec):
+        if (not isinstance(element, dict)
+                or element.get("type") not in _COMPOSITE_DISCRETE_TYPES):
+            continue
+        if "legend_group" in element:
+            key = ("group", int(element["legend_group"]))
+        elif int(element.get("legend_slot_mask", 0)):
+            key = (
+                "mask", int(element.get("legend_slots", 0)),
+                int(element["legend_slot_mask"]),
+            )
+        elif int(element.get("legend_slots", 0)):
+            key = (
+                "phase", int(element["legend_slots"]),
+                int(element.get("legend_slot_phase", 0)),
+            )
+        elif index in bounds:
+            spacing = round(float(element.get("spacing", 1.0)), 12)
+            xspacing = round(float(
+                element.get("xspacing") or spacing), 12)
+            left, right = bounds[index]
+            key = (
+                "motif", spacing, xspacing,
+                _legend_stagger_value(element),
+                round(left, 12), round(right, 12),
+            )
+        else:
+            key = ("element", index)
+        keyed.setdefault(key, []).append(index)
+    return sorted((tuple(indices) for indices in keyed.values()),
+                  key=lambda indices: indices[0])
+
+
+def _composite_legend_masks(family_count, qualifier):
+    """Build one shared three-row matrix for every semantic family.
+
+    GB/T 958 appendix A.2.3 assigns one common lattice to the subject and
+    additional symbols.  A quality modifier (``××质``) is 2:1, a contained
+    constituent (``含××``) is 3:1, and the remaining two-component forms are
+    1:1.  For three or more constituents, the subject keeps two slots and
+    every secondary family gets one (2:1:1, 2:1:1:1, ...).
+    """
+    count = max(2, int(family_count))
+    if count > 2:
+        # Family 0 is the subject/base.  Existing secondary constituents keep
+        # source order; the newly added modifier is the final family.
+        top = (1, 0, *range(2, count), 0)
+        slots = count + 1
+    elif qualifier.startswith("含"):
+        slots = 4
+        top = (1, 0, 0, 0)
+    elif qualifier.endswith("质"):
+        slots = 3
+        top = (1, 0, 0)
+    else:
+        slots = 4
+        top = (1, 0, 1, 0)
+    rows = (top, tuple(reversed(top)), top)
+    masks = [0] * count
+    for row_index, row in enumerate(rows):
+        for slot_index, family in enumerate(row):
+            masks[family] |= 1 << (row_index * slots + slot_index)
+    return slots, masks
+
+
+def _tag_composite_legend_families(spec, families, *, slots, masks,
+                                   first_group=1):
+    """Retag semantic families while preserving each motif's components."""
+    tagged = copy.deepcopy(list(spec or []))
+    for family_index, indices in enumerate(families):
+        for index in indices:
+            element = tagged[index]
+            element.update({
+                "legend_slots": slots,
+                "legend_slot_mask": masks[family_index],
+                "legend_slot_period": LEGEND_REPRESENTATIVE_ROWS,
+                "legend_group": first_group + family_index,
+            })
+            element.pop("legend_slot_phase", None)
+    return tagged
+
+
+def _composite_pattern(base_patt, overlay_spec, qualifier=""):
     base_fn = PATTERNS.get(base_patt) if base_patt else None
     ov_fn = build_spec_pattern(overlay_spec, fixed_layer_rows=True)
+    base_spec = list(getattr(base_fn, "source_spec", []) or [])
+    overlay_source_spec = list(ov_fn.source_spec)
+    base_families = _composite_discrete_families(base_spec)
+    overlay_families = _composite_discrete_families(overlay_source_spec)
+    if base_families and overlay_families:
+        family_count = len(base_families) + len(overlay_families)
+        slots, masks = _composite_legend_masks(family_count, qualifier)
+        legend_spec = _tag_composite_legend_families(
+            base_spec, base_families, slots=slots,
+            masks=masks[:len(base_families)])
+        legend_spec += _tag_composite_legend_families(
+            overlay_source_spec, overlay_families, slots=slots,
+            masks=masks[len(base_families):],
+            first_group=1 + len(base_families))
+    else:
+        legend_spec = copy.deepcopy(base_spec + overlay_source_spec)
+    legend_fn = build_spec_pattern(legend_spec, fixed_layer_rows=True)
+
     def fn(x0, x1, y0, y1, dx, dy):
+        if _LEGEND_SWATCH_CONTEXT.get() is not None:
+            return legend_fn(x0, x1, y0, y1, dx, dy)
         segs, marks, csegs = [], [], []
         if base_fn:
             segs, marks, csegs = _norm3(base_fn(x0, x1, y0, y1, dx, dy))
         s2, m2, c2 = _norm3(ov_fn(x0, x1, y0, y1, dx, dy))
         return (list(segs) + list(s2), list(marks) + list(m2),
                 list(csegs) + list(c2))
-    # 合并 spec：小样按层带节距自适应（3 行等高）时能识别基岩层理
-    base_spec = list(getattr(base_fn, "spec", []) or [])
-    fn.spec = base_spec + list(ov_fn.spec)
-    fn.source_spec = fn.spec
-    fn.effective_spec = (
-        list(getattr(base_fn, "effective_spec", base_spec) or [])
-        + list(ov_fn.effective_spec)
-    )
-    fn.fixed_layer_rows = bool(
-        getattr(base_fn, "fixed_layer_rows", False)
-        or ov_fn.fixed_layer_rows
-    )
+    # Expose the actual legend declaration so catalogue audits and subsequent
+    # combinations retain the ratio metadata instead of recompiling two
+    # unrelated grids.  The normal chart path above deliberately preserves
+    # the original full-area textures.
+    fn.spec = legend_fn.spec
+    fn.source_spec = legend_fn.source_spec
+    fn.effective_spec = legend_fn.effective_spec
+    fn.effective_spec_for = legend_fn.effective_spec_for
+    fn.fixed_layer_rows = legend_fn.fixed_layer_rows
+    fn.legend_fixed_rows = legend_fn.legend_fixed_rows
+    fn.legend_spec_for = legend_fn.legend_spec_for
+    fn.auto_composite = True
     return fn
 
 
 def _try_composite(name):
-    """尝试"修饰词+基础岩性"组合；成功则注册并返回标准名。
-    若别名表里有包含该修饰词的更长专名（如"生物碎屑灰岩"有专用
-    花纹），则让专名优先，不做组合。"""
-    for kw, spec in _QUALIFIERS:
-        if kw not in name:
+    """Resolve every modifier and build a deterministic nested combination.
+
+    A long registered/alias base wins over its shorter suffix (for example
+    ``生物碎屑灰岩`` must keep its dedicated pattern).  All remaining
+    qualifier tokens are then consumed in source order and applied from the
+    base outward.  This makes a long-running web service independent of which
+    related name happened to be requested first and prevents silently
+    dropping the second modifier in names such as ``钙质硅质泥岩``.
+    """
+    candidates = []
+    for base in LITHOLOGY:
+        if not base or base == name:
             continue
-        if any(kw in key and key in name and len(key) > len(kw)
-               for key, _ in _ALIAS_ORDER):
+        start = name.rfind(base)
+        if start >= 0:
+            candidates.append((len(base), 1, start, start,
+                               start + len(base), base, 0))
+    for alias_index, (key, std) in enumerate(_ALIAS_ORDER):
+        if not key or std not in LITHOLOGY:
             continue
-        rest = name.replace(kw, "", 1)
-        base = rest if rest in LITHOLOGY else None
-        if base is None:
-            for key, std in _ALIAS_ORDER:
-                if key in rest:
-                    base = std
-                    break
-        if not base:
+        start = name.rfind(key)
+        if start >= 0:
+            # Registered names win an equal-length tie; alias order resolves
+            # equal aliases exactly as the public fallback resolver does.
+            candidates.append((len(key), 0, start, start,
+                               start + len(key), std, -alias_index))
+    if not candidates:
+        return None
+    winner = max(candidates)
+    base_start, base_end, base = winner[3], winner[4], winner[5]
+    remainder = name[:base_start] + name[base_end:]
+
+    qualifier_table = sorted(_QUALIFIERS, key=lambda item: len(item[0]),
+                             reverse=True)
+    qualifiers = []
+    index = 0
+    while index < len(remainder):
+        matched = next((item for item in qualifier_table
+                        if remainder.startswith(item[0], index)), None)
+        if matched is None:
+            index += 1       # colour/grain-size prose is descriptive only
             continue
-        std_name = kw + base
+        qualifiers.append(matched)
+        index += len(matched[0])
+    if not qualifiers:
+        return None
+
+    current_base = base
+    for keyword, overlay_spec in reversed(qualifiers):
+        std_name = keyword + current_base
         if std_name not in LITHOLOGY:
-            face, patt = LITHOLOGY[base]
-            pname = f"{base}+{kw}"
-            PATTERNS[pname] = _composite_pattern(patt, spec)
-            LITHOLOGY[std_name] = (face, pname)
-        return std_name
-    return None
+            face, pattern_name = LITHOLOGY[current_base]
+            composite_name = f"{current_base}+{keyword}"
+            PATTERNS[composite_name] = _composite_pattern(
+                pattern_name, overlay_spec, keyword)
+            LITHOLOGY[std_name] = (face, composite_name)
+        current_base = std_name
+    return current_base
 
 
 def _units_per_inch(ax):
@@ -2111,7 +3089,7 @@ def _units_per_inch(ax):
 
 
 def paint(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
-          spec=None, face=None):
+          spec=None, face=None, fixed_layer_rows=False):
     """在 ax 上以岩性样式填充多边形 verts（数据坐标顶点列表）。
 
     必须在坐标轴范围（xlim/ylim）和位置确定之后调用，花纹间距才会正确。
@@ -2119,7 +3097,8 @@ def paint(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
     此时可用 face 指定底色，并保留用户 spec 的原始重复语义。
     """
     if spec is not None:
-        pat_fn = build_spec_pattern(spec)
+        pat_fn = build_spec_pattern(
+            spec, fixed_layer_rows=bool(fixed_layer_rows))
         if face is None:
             face = "#f2efe6"
     else:
@@ -2161,15 +3140,32 @@ def paint(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
             continue
         ms = mark[4] if len(mark) > 4 else (3.4 if marker == "o" else 2.0)
         col = (mark[5] if len(mark) > 5 else None) or INK
+        marker_zorder = 2
+        if (_LEGEND_SWATCH_CONTEXT.get() is not None
+                and isinstance(marker, str)
+                and marker.startswith("$") and marker.endswith("$")
+                and face not in (None, "none")):
+            # Dense shale lines and brick strokes must not run through Ca/Si/C
+            # labels.  The standard plate leaves a small knockout around
+            # text symbols; use the lithology face colour so the mask remains
+            # correct for coloured and monochrome legends alike.
+            clearance_pt = LEGEND_SYMBOL_CLEARANCE_MM * 72.0 / 25.4
+            (mask,) = ax.plot(
+                mx, my, ls="none", marker="s",
+                ms=ms + 2 * clearance_pt,
+                mfc=face, mec=face, mew=0, zorder=2.1)
+            mask.set_clip_path(poly)
+            marker_zorder = 2.2
         (line,) = ax.plot(mx, my, ls="none", marker=marker, ms=ms,
                           mfc=(col if filled else "none"),
-                          mec=col, mew=0.55, zorder=2)
+                          mec=col, mew=0.55, zorder=marker_zorder)
         line.set_clip_path(poly)
     return poly
 
 
 def paint_legend_swatch(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
-                         spec=None, face=None, height_mm=10.0, rows=3):
+                         spec=None, face=None, height_mm=10.0, rows=3,
+                         fixed_layer_rows=False):
     """统一绘制图例小样，与主图可调层高完全解耦。
 
     标准内置层状/符号阵展示三个代表重复单元；页岩式
@@ -2178,7 +3174,16 @@ def paint_legend_swatch(ax, verts, lith_name, spacing=BASE_SPACING, lw=0.55,
     with legend_swatch_scope(height_mm, rows):
         return paint(
             ax, verts, lith_name, spacing=spacing, lw=lw, spec=spec,
-            face=face)
+            face=face, fixed_layer_rows=fixed_layer_rows)
+
+
+def paint_basic_symbol_sample(ax, verts, spec, spacing=BASE_SPACING, lw=0.55,
+                              face="#ffffff", height_mm=10.0):
+    """Draw one complete RPBP symbol motif at the centre of a sample box."""
+    with legend_single_motif_scope():
+        return paint_legend_swatch(
+            ax, verts, None, spacing=spacing, lw=lw, spec=spec, face=face,
+            height_mm=height_mm, rows=LEGEND_REPRESENTATIVE_ROWS)
 
 
 def _draw_cased_line(ax, xs, ys, color, lw, zorder, clearance_mm,

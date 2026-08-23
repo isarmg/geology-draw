@@ -87,36 +87,35 @@ def _ov(els, spacing=3.0):
 # ---------------------------------------------------------------------------
 
 BP_SYM = {
-    "角砾(状)":   [SH("三角", 1.5, 1.5, 2.0)],
+    "角砾(状)":   [SH("三角", 2.0, 2.0, 2.0)],
     "砾(状)":     [SH("椭圆", 2.0, 1.0, 2.0)],
-    "砂质":       [MK(".", 1.6, 1.8)],
-    "粉砂质":     [MK(".", 1.3, 1.1)],
-    "泥质":       [LN(0, 1.7, dash=1.1, gap=1.6, offset=0.5)],
+    "砂质":       [MK(".", 1.6, 0.85)],
+    "粉砂质":     [MK(".", 1.3, 0.3, stagger=False, xoff=-0.25),
+                   MK(".", 1.3, 0.3, stagger=False, xoff=0.25)],
+    "泥质":       [SH("横条", 2.0, 0.1, 1.7)],
     "钙质":       [TXT("Ca", 2.6, 4.4)],
     "硅质":       [TXT("Si", 2.6, 4.4)],
-    "白云质":     [SH("双斜线", 1.4, 1.2, 2.4)],
+    "白云质":     [SH("双斜线", 1.5, 1.5, 2.4)],
     "碳质":       [TXT("C", 2.4, 4.4)],
-    "有机质":     [SH("竖条", 0.6, 1.8, 2.4, bold=True)],
-    "沥青质":     [SH("横条", 3.0, 0.8, 2.6, bold=True)],
+    "有机质":     [SH("竖条", 0.5, 2.0, 2.4, bold=True)],
+    "沥青质":     [SH("横条", 5.0, 1.5, 2.6, bold=True)],
     "凝灰质":     [TXT(":", 2.0, 4.0)],
-    "复成分":     [SH("井字", 1.6, 1.2, 2.4)],
+    "复成分":     [SH("梳形", 3.0, 1.5, 2.4)],
     "生物碎屑":   [TXT("e", 2.6, 4.4)],
-    "结核":       [SH("椭圆", 2.2, 0.9, 2.8, bold=True)],
-    "藻类":       [SH("椭圆", 2.0, 0.8, 2.8), SH("横条", 1.6, 0.3, 2.8)],
-    "超基性":     [SH("人字", 1.8, 1.3, 2.0)],
-    "基性":       [SH("X形", 1.6, 1.6, 2.0)],
-    "中性":       [SH("倒T形", 1.8, 1.8, 2.0)],
-    "酸性":       [SH("十字", 1.8, 1.8, 2.0)],
-    "碱性":       [SH("T形", 1.8, 1.8, 2.0)],
-    "玻基橄榄质": [SH("下箭头", 1.0, 1.8, 2.2)],
-    "超镁铁质":   [SH("人字", 1.8, 1.3, 2.0, bold=True)],
-    "流纹质":     [SH("V字", 1.3, 1.0, 2.2), MK(".", 2.2, 1.4,
-                                                stagger=False, xoff=0.5)],
-    "英安质":     [SH("V字", 1.4, 1.1, 2.2),
-                   SH("斜线", 1.2, 1.2, 2.2, stagger=False, xoff=0.5)],
-    "粗面质":     [SH("工形", 1.8, 2.0, 2.2, bold=True)],
-    "安粗质":     [SH("安粗符", 1.8, 2.0, 2.2)],
-    "安山质":     [SH("V字", 1.7, 1.3, 2.0)],
+    "结核":       [SH("结核符", 2.2, 0.9, 2.8)],
+    "藻类":       [SH("双圆", 2.0, 0.8, 2.8)],
+    "超基性":     [SH("人字", 2.0, 2.0, 2.0)],
+    "基性":       [SH("X形", 2.0, 2.0, 2.0)],
+    "中性":       [SH("倒T形", 2.0, 2.0, 2.0)],
+    "酸性":       [SH("十字", 2.0, 2.0, 2.0)],
+    "碱性":       [SH("T形", 2.0, 2.0, 2.0)],
+    "玻基橄榄质": [SH("下箭头", 2.0, 2.0, 2.2)],
+    "超镁铁质":   [SH("人字", 2.0, 2.0, 2.0, bold=True)],
+    "流纹质":     [SH("流纹质符", 2.0, 2.0, 2.2)],
+    "英安质":     [SH("英安质符", 2.0, 2.0, 2.2)],
+    "粗面质":     [SH("工形", 3.0, 2.0, 2.2, bold=True)],
+    "安粗质":     [SH("安粗符", 3.0, 2.0, 2.2)],
+    "安山质":     [SH("V字", 2.0, 2.0, 2.0)],
     "玄武安山质": [SH("Γ形", 2.0, 1.6, 2.2)],
     "玄武质":     [SH("Γ形", 1.6, 1.6, 2.0)],
     "粗面玄武质": [SH("F形", 1.5, 1.8, 2.2)],
@@ -128,15 +127,15 @@ BP_SYM = {
     "粗粒":       [SH("十字", 3.0, 3.0, 3.0)],
     "不等粒":     [SH("十字", 3.0, 3.0, 2.6),
                    SH("十字", 1.5, 1.5, 2.6, stagger=False, xoff=0.5)],
-    "斑状":       [SH("十字", 3.0, 3.0, 2.6, lw=1.4),
-                   SH("十字", 1.5, 1.5, 2.6, stagger=False, xoff=0.5)],
+    "斑状":       [SH("十字", 3.0, 3.0, 2.6, lw=1.4)],
     "似斑状":     [SH("十字", 3.0, 3.0, 2.6, lw=1.4),
-                   SH("方框", 1.8, 0.9, 2.6, stagger=False, xoff=0.5)],
+                   SH("方框", 1.8, 0.9, 2.6, stagger=False, xoff=0.5,
+                      motif_x_mm=0.0, motif_y_mm=0.0)],
     "多斑":       [SH("十字", 3.0, 3.0, 2.0, lw=1.4)],
-    "少斑":       [SH("十字", 3.0, 3.0, 3.2, lw=1.4),
-                   SH("十字", 1.5, 1.5, 3.2, stagger=False, xoff=0.5)],
+    "少斑":       [SH("十字", 3.0, 3.0, 3.2, lw=1.4)],
     "含斑":       [SH("十字", 3.0, 3.0, 3.0, lw=1.4),
-                   SH("方框", 0.8, 0.8, 3.0, stagger=False, xoff=0.5)],
+                   SH("方框", 0.8, 0.8, 3.0, stagger=False, xoff=0.5,
+                      motif_x_mm=1.45, motif_y_mm=0.95)],
     "不等粒斑状": [SH("十字", 3.0, 3.0, 2.4, lw=1.4),
                    SH("十字", 1.5, 1.5, 2.4, stagger=False, xoff=0.5)],
     "片麻状":     [SH("十字", 1.8, 1.8, 2.4),
@@ -156,7 +155,9 @@ BP_SYM = {
     "火山泥球":   [SH("双圆", 2.0, 2.0, 2.6)],
     "球泡":       [SH("八形", 1.0, 2.0, 2.4)],
     "石泡":       [SH("八形", 1.0, 2.0, 2.4), MK(".", 2.4, 1.2,
-                                                 stagger=False, xoff=0.5)],
+                                                 stagger=False, xoff=0.5,
+                                                 motif_x_mm=0.0,
+                                                 motif_y_mm=0.0)],
     "集块":       [SH("集块符", 2.8, 2.0, 3.0)],
     "岩屑":       [MK("d", 2.4, 2.6)],
     "晶屑":       [SH("斜线", 0.9, 1.8, 2.2, bold=True)],
@@ -177,24 +178,45 @@ BP_SYM = {
     "豹皮、斑花(状)": [SH("双短横", 2.4, 0.8, 2.6)],
     "结晶":       [MK("d", 2.2, 3.0, filled=False)],
     "泥晶":       [SH("竖梭", 0.9, 1.8, 2.4), MK(".", 2.4, 1.2,
-                                                 stagger=False, xoff=0.5)],
+                                                 stagger=False, xoff=0.5,
+                                                 motif_x_mm=0.0,
+                                                 motif_y_mm=0.0)],
     "亮晶":       [SH("竖梭", 0.9, 1.8, 2.4)],
     "微晶":       [SH("竖梭", 0.8, 1.6, 2.4), MK(".", 2.4, 1.1)],
     "细晶":       [SH("横梭", 1.8, 0.9, 2.4), MK(".", 2.4, 1.1,
-                                                 stagger=False, xoff=0.5)],
+                                                 stagger=False, xoff=0.5,
+                                                 motif_x_mm=0.0,
+                                                 motif_y_mm=0.0)],
     "粉晶":       [SH("竖梭", 1.2, 2.2, 2.6), MK(".", 2.6, 1.1)],
     "粗晶":       [SH("横梭", 2.6, 1.3, 2.8)],
     "斑点(状)":   [MK(".", 2.2, 3.2)],
     "渗透(状)":   [SH("波折线", 1.4, 0.5, 2.4),
-                   MK(".", 2.4, 1.2, stagger=False, xoff=0.5)],
-    "条纹(痕、状)": [SH("波折线", 1.8, 0.6, 2.0)],
+                   MK(".", 2.4, 1.2, stagger=False, xoff=0.5,
+                      motif_x_mm=0.0, motif_y_mm=0.0)],
+    "条纹(痕、状)": [SH("波折线", 1.8, 0.6, 2.0),
+                     SH("波折线", 0.8, 0.35, 2.0,
+                        legend_center_once=True)],
     "眼球(状)":   [SH("波折线", 1.8, 0.6, 2.2),
-                   SH("椭圆", 1.8, 0.9, 2.2, stagger=False, xoff=0.5)],
+                   SH("椭圆", 1.8, 0.9, 2.2, stagger=False, xoff=0.5,
+                      legend_center_once=True)],
     "网(状)":     [SH("波折线", 1.8, 0.6, 2.2),
-                   SH("十字", 1.4, 1.4, 2.2, stagger=False, xoff=0.5)],
+                   SH("十字", 1.4, 1.4, 2.2, stagger=False, xoff=0.5,
+                      legend_center_once=True)],
     "雾迷(状)":   [SH("波折线", 1.8, 0.6, 2.2),
-                   MK(".", 2.2, 1.4, stagger=False, xoff=0.5)],
+                   MK(".", 2.2, 1.4, stagger=False, xoff=0.5,
+                      legend_center_once=True)],
 }
+
+# Most RPBP rows define one symbol (occasionally a two-part motif).  Only the
+# five bed-thickness keys and the four texture fields are themselves repeating
+# swatches in Table 4, so those retain the pattern renderer.
+_BASIC_LAYER_CODES = frozenset({
+    "RPBP000044", "RPBP000045", "RPBP000046", "RPBP000047",
+    "RPBP000048",
+})
+_BASIC_TEXTURE_CODES = frozenset({
+    "RPBP010083", "RPBP010084", "RPBP010085", "RPBP010086",
+})
 
 # "井字"（复成分符号）：补充图形
 L._SHAPES.setdefault("井字", [[(-0.2, -0.5), (-0.2, 0.5)],
@@ -242,7 +264,8 @@ QUAL = {
     "铝土":   [TXT("Al", 3.0)],
     "石膏":   [SH("梳形", 2.2, 1.2, 3.2)],
     "燧石":   [SH("椭圆", 2.0, 0.8, 3.2, bold=True)],
-    "含燧石结核": [SH("椭圆", 2.0, 0.8, 3.2, bold=True)],
+    "含燧石结核": [SH("实心透镜", 2.8, 1.0, 3.2, bold=True,
+                         legend_course_boundary=True)],
     # 结晶结构
     "结晶":   [MK("d", 2.8, 3.0, filled=False)],
     "泥晶":   BP_SYM["泥晶"],
@@ -385,12 +408,12 @@ _QUAL_KEYS = sorted((k for k, v in QUAL.items() if v is not None),
                     key=len, reverse=True)
 
 
-def _overlays(prefix, budget=3):
-    """把岩石名的修饰前缀解析为叠加符号元素列表（贪心、长词优先）。
+def _overlay_groups(prefix, budget=3):
+    """把岩石名的修饰前缀解析为逐语义分组的图元（贪心、长词优先）。
 
     配比按附录 A 表 A.2：QUAL 缺省网格约为“××质”级（附加:基本≈1:2）；
     “含××”更稀疏（1:3），把该组符号间距放大 1.25 倍近似。"""
-    out, rest, used = [], prefix, 0
+    groups, rest, used = [], prefix, 0
     guard = 0
     while rest and used < budget and guard < 20:
         guard += 1
@@ -405,16 +428,24 @@ def _overlays(prefix, budget=3):
                 dilute = True
                 rest = rest[1:]
         if hit is not None:
+            group = []
             for e in QUAL[hit]:
                 e = dict(e)
                 if dilute and "spacing" in e:
                     e["spacing"] = round(e["spacing"] * 1.25, 2)
-                out.append(e)
+                group.append(e)
+            groups.append(group)
             rest = rest[len(hit):]
             used += 1
         else:
             rest = rest[1:]     # 未识别的字跳过（如"状""化"或粒级词）
-    return out
+    return groups
+
+
+def _overlays(prefix, budget=3):
+    """兼容旧调用：把逐语义分组展平成图元列表。"""
+    return [element for group in _overlay_groups(prefix, budget=budget)
+            for element in group]
 
 
 # ---------------------------------------------------------------------------
@@ -607,27 +638,98 @@ PYRO_CLAST = [
 # 逐类生成器
 # ---------------------------------------------------------------------------
 
-def _dephase(els):
-    """叠加元素错半格，避免与基岩符号网格重合。"""
+def _dephase(els, *, legend_single=False):
+    """Shift one semantic overlay group without tearing its motif apart.
+
+    The normal chart keeps the historical fixed half-cell phase.  A legend
+    may alternate the *whole* group between representative rows, but that is
+    recorded separately as ``legend_stagger``: changing ``stagger`` itself
+    would split two-part signs (mud-crystal lozenge+dot, four-dot volcanic
+    clast, paired minerals) on every other row of the actual column chart.
+    """
     out = []
     for el in els:
         el = dict(el)
         typ = el.get("type")
         if typ in ("markers", "dots", "shape"):
-            # 点阵和矢量图形都支持网格横向相位。
             el.setdefault("stagger", False)
             el.setdefault("xoff", 0.5)
+            el["legend_stagger"] = True
+            if legend_single:
+                el.setdefault("legend_single", True)
         elif typ == "lines":
             # lines 没有 xoff/stagger；phase 是沿线方向的合法相位。
             el.setdefault("phase", 0.5)
         elif typ == "ell":
-            # ell 只支持交错行，不支持 xoff。
+            # ell uses the same swatch-only group phase as other symbols.
             el.setdefault("stagger", False)
+            el["legend_stagger"] = True
+            if legend_single:
+                el.setdefault("legend_single", True)
         elif typ == "rows":
             # 行式花纹的相位应用在行内图元，而不是 rows 本身。
-            el["rows"] = [_dephase(row) for row in (el.get("rows") or [])]
+            el["rows"] = [
+                _dephase(row, legend_single=legend_single)
+                for row in (el.get("rows") or [])]
         out.append(el)
     return out
+
+
+_LEGEND_DISCRETE_TYPES = frozenset(("markers", "dots", "shape", "ell"))
+
+
+def _tag_legend_slot_family(elements, *, slots, mask, group):
+    """Put every primitive of one complete motif on the same legend slots."""
+    out = []
+    for element in elements:
+        element = dict(element)
+        if element.get("type") in _LEGEND_DISCRETE_TYPES:
+            element.update({
+                "legend_slots": int(slots),
+                "legend_slot_mask": int(mask),
+                "legend_slot_period": 3,
+                "legend_group": int(group),
+            })
+        out.append(element)
+    return out
+
+
+def _sedimentary_legend_masks(overlay_count, *, contained=False,
+                              quality=False):
+    """Return A.2.3 shared-slot masks for clastic sedimentary legends.
+
+    A single ``含××`` family uses base:modifier = 3:1 (four slots); a
+    quality family uses 2:1 (three slots).  With several named constituents,
+    the subject base keeps two slots and every secondary family gets one,
+    matching the standard's 2:1:1 composition example.
+    """
+    count = max(1, int(overlay_count))
+    if count == 1:
+        if contained:
+            slots = 4
+            top = ["overlay:0"] + ["base"] * 3
+        elif quality:
+            slots = 3
+            top = ["overlay:0", "base", "base"]
+        else:
+            # Quartz sandstone / feldspathic sandstone combine two basic
+            # constituents 1:1 rather than using the “××质” 1:2 rule.
+            slots = 4
+            top = ["overlay:0", "base", "overlay:0", "base"]
+        rows = [top, list(reversed(top)), top]
+    else:
+        slots = count + 2
+        top = ["overlay:0", "base"]
+        top += [f"overlay:{index}" for index in range(1, count)]
+        top += ["base"]
+        rows = [top, list(reversed(top)), top]
+
+    masks = {}
+    for row_index, row in enumerate(rows):
+        for slot, family in enumerate(row):
+            masks[family] = masks.get(family, 0) | (
+                1 << (row_index * slots + slot))
+    return slots, masks
 
 
 def _sed_spec(name):
@@ -640,7 +742,52 @@ def _sed_spec(name):
                 els = [_brk(spacing=1.2 if prefix.startswith("页片状")
                             else 1.6, ratio=3.4)]
                 prefix = prefix[2 if prefix.startswith("薄层") else 3:]
-            return els + _dephase(_overlays(prefix)), color
+            has_brick = any(
+                isinstance(element, dict) and element.get("type") == "brick"
+                for element in els)
+            # Clastic qualifiers are allocated one complementary slot per
+            # band (A.2.3 ratios); dense shale uses that sparse layout only
+            # for “含…” entries.  Brick modifiers instead inherit brick-cell
+            # centres and therefore retain their 1-2-1 lattice.
+            legend_single = (
+                (suf == "页岩" and prefix.startswith("含"))
+                or (suf != "页岩" and not has_brick))
+            overlay_groups = [
+                _dephase(group, legend_single=legend_single)
+                for group in _overlay_groups(prefix)
+            ]
+            if suf != "页岩" and not has_brick:
+                discrete_groups = [
+                    group for group in overlay_groups
+                    if any(element.get("type") in _LEGEND_DISCRETE_TYPES
+                           for element in group)
+                ]
+                base_has_symbols = any(
+                    element.get("type") in _LEGEND_DISCRETE_TYPES
+                    for element in els)
+                if discrete_groups and base_has_symbols:
+                    slots, masks = _sedimentary_legend_masks(
+                        len(discrete_groups),
+                        contained=prefix.startswith("含"),
+                        quality=(prefix.endswith("质")
+                                 and not prefix.startswith("含")))
+                    els = _tag_legend_slot_family(
+                        els, slots=slots, mask=masks["base"], group=1)
+                    tagged_groups = []
+                    discrete_index = 0
+                    for group in overlay_groups:
+                        if any(element.get("type") in _LEGEND_DISCRETE_TYPES
+                               for element in group):
+                            group = _tag_legend_slot_family(
+                                group, slots=slots,
+                                mask=masks[f"overlay:{discrete_index}"],
+                                group=2 + discrete_index)
+                            discrete_index += 1
+                        tagged_groups.append(group)
+                    overlay_groups = tagged_groups
+            overlays = [element for group in overlay_groups
+                        for element in group]
+            return els + overlays, color
     return None, None
 
 
@@ -715,6 +862,72 @@ def _igneous_spec(name, table):
     return None, None, None
 
 
+def _pyro_clast_tokens(families, count, row_index):
+    """Allocate the remaining A.2.4 slots among clastic sub-families.
+
+    The suffix-nearest family is the subject rock.  With one modifier it is
+    therefore repeated 2:1; when a row cannot contain every modifier, the
+    sequence rotates over the three representative bands instead of dropping
+    a symbol or drawing two symbols on the same anchor.
+    """
+    if count <= 0 or not families:
+        return []
+    if len(families) == 1:
+        ring = list(families)
+    elif len(families) == 2:
+        ring = [families[0], families[0], families[1]]
+    else:
+        ring = list(families)
+    start = (int(row_index) * int(count)) % len(ring)
+    return [ring[(start + index) % len(ring)] for index in range(count)]
+
+
+def _pyro_legend_masks(clast_families, *, welded=False, lava=False):
+    """Build the three-band/four-slot matrices prescribed by A.2.4.
+
+    Normal pyroclastics use chemical:clastic = 1:3, welded variants use
+    chemical:welded:clastic = 1:1:2, and pyroclastic lavas use 3:1.  A 12-bit
+    row-major mask per family lets the renderer share one physical matrix.
+    """
+    rows = []
+    for row_index in range(3):
+        slots = [None] * 4
+        if lava:
+            clast_positions = [row_index % 4]
+            for slot in range(4):
+                if slot not in clast_positions:
+                    slots[slot] = "composition"
+        else:
+            composition_slot = row_index % 4
+            slots[composition_slot] = "composition"
+            if welded:
+                slots[(composition_slot + 1) % 4] = "welded"
+            clast_positions = [
+                slot for slot, family in enumerate(slots) if family is None
+            ]
+        tokens = _pyro_clast_tokens(
+            clast_families, len(clast_positions), row_index)
+        for slot, family in zip(clast_positions, tokens):
+            slots[slot] = family
+        # Defensive fallback for a non-standard name with no recognised
+        # clastic word: keep every slot occupied by the chemical sign.
+        slots = [family or "composition" for family in slots]
+        rows.append(slots)
+
+    masks = {}
+    for row_index, slots in enumerate(rows):
+        for slot, family in enumerate(slots):
+            masks[family] = masks.get(family, 0) | (
+                1 << (row_index * 4 + slot))
+    return masks
+
+
+def _pyro_tag_family(elements, family, mask, group):
+    """Attach a shared legend matrix to one complete symbol family."""
+    return _tag_legend_slot_family(
+        elements, slots=4, mask=mask, group=group)
+
+
 def _pyro_spec(name):
     comp = None
     for c in sorted(PYRO_COMP, key=len, reverse=True):
@@ -724,16 +937,47 @@ def _pyro_spec(name):
     if comp is None:
         return None, None
     rest = name[len(comp):]
-    els = [dict(e) for e in PYRO_COMP[comp]]
-    added = set()
+    welded = "熔结" in rest
+    lava = "熔岩" in rest and not welded
+
+    matches = []
     for key, sym in PYRO_CLAST:
-        if key in rest and key not in added:
-            els += _dephase(sym)
-            added.add(key)
-        if len(added) >= 3:
-            break
-    if "熔结" in rest:
-        els += [SH("波折线", 1.8, 0.6, 2.4, stagger=False)]
+        position = rest.rfind(key)
+        if position >= 0:
+            matches.append((position, key, sym))
+    # At most three clastic families occur in the official catalogue.  The
+    # suffix-nearest one is the subject rock and receives the dominant share.
+    matches.sort(key=lambda item: item[0])
+    matches = matches[-3:]
+    if matches:
+        base = max(matches, key=lambda item: item[0])
+        ordered = [base] + [item for item in matches if item is not base]
+    else:
+        ordered = []
+    family_names = [f"clast:{key}" for _position, key, _sym in ordered]
+    masks = _pyro_legend_masks(
+        family_names, welded=welded, lava=lava)
+
+    els = _pyro_tag_family(
+        [dict(e) for e in PYRO_COMP[comp]],
+        "composition", masks.get("composition", 0), 1)
+    for family_index, ((_position, key, sym), family) in enumerate(
+            zip(ordered, family_names), 2):
+        family_elements = _dephase(sym)
+        if key == "火山碎屑" and len(family_elements) == 2:
+            # RPBP000065 is one four-dot token.  Preserve the ordinary-pattern
+            # half-cell phase while giving its two colon components a compact
+            # 0.8-mm physical separation inside each legend slot.
+            family_elements[0]["xoff"] = 0.42
+            family_elements[0]["motif_x_mm"] = -0.4
+            family_elements[1]["xoff"] = 0.58
+            family_elements[1]["motif_x_mm"] = 0.4
+        els += _pyro_tag_family(
+            family_elements, family, masks.get(family, 0), family_index)
+    if welded:
+        els += _pyro_tag_family(
+            [SH("波折线", 1.8, 0.6, 2.4, stagger=False)],
+            "welded", masks.get("welded", 0), 10)
     if rest.startswith("沉") or "沉火山" in rest or "沉集块" in rest \
             or "沉角砾" in rest or "沉凝灰" in rest:
         # 附录 A.2.4 d)：沉火山碎屑岩在花纹中加表示层状的横线（实线）
@@ -1254,12 +1498,29 @@ def render_catalog_sheet(category, ncols=4):
             if category == "基本花纹":
                 spec, face = spec_for(code, name), "#ffffff"
                 spec = spec[0]
-                # 基本图形不是岩性层带，按标准原图元密度展示。
-                L.paint_legend_swatch(
-                    ax, verts, None, spec=spec, face=face,
-                    spacing=L.BASE_SPACING,
-                    height_mm=L.LEGEND_SWATCH_HEIGHT_MM,
-                    rows=L.LEGEND_REPRESENTATIVE_ROWS)
+                if code in _BASIC_LAYER_CODES:
+                    L.paint_legend_swatch(
+                        ax, verts, None, spec=spec, face=face,
+                        spacing=L.BASE_SPACING,
+                        height_mm=L.LEGEND_SWATCH_HEIGHT_MM,
+                        rows=L.LEGEND_REPRESENTATIVE_ROWS)
+                elif code in _BASIC_TEXTURE_CODES:
+                    # These four definitions are texture fields rather than
+                    # isolated symbols.  Table 4 shows two complete, centred
+                    # rows; normalise only their vertical lattice.
+                    L.paint_legend_swatch(
+                        ax, verts, None, spec=spec, face=face,
+                        spacing=L.BASE_SPACING,
+                        height_mm=L.LEGEND_SWATCH_HEIGHT_MM, rows=2,
+                        fixed_layer_rows=True)
+                else:
+                    # RPBP cells are symbol definitions, not arbitrary crops
+                    # of their eventual repeated rock pattern.  Draw the
+                    # complete (possibly composite) motif once at true centre.
+                    L.paint_basic_symbol_sample(
+                        ax, verts, spec, face=face,
+                        spacing=L.BASE_SPACING,
+                        height_mm=L.LEGEND_SWATCH_HEIGHT_MM)
             else:
                 L.paint_legend_swatch(
                     ax, verts, name, spacing=L.BASE_SPACING,

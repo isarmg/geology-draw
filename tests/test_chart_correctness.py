@@ -15,7 +15,7 @@ os.environ.setdefault("MPLCONFIGDIR", tempfile.gettempdir())
 from matplotlib import colors
 from matplotlib.figure import Figure
 
-from strat import column, lithology
+from strat import column, gb958, lithology
 from strat.column import render_column
 from strat.section import _layer_order, render_section
 
@@ -825,6 +825,29 @@ class LegendCorrectnessTests(unittest.TestCase):
                 and -1e-9 <= float(segment[0][1]) <= height + 1e-9)
         })
 
+    @staticmethod
+    def _legend_geometry(name):
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        _face, pattern_name = lithology.style_of(name)
+        pattern = lithology.PATTERNS[pattern_name]
+        with lithology.legend_swatch_scope(10, 3):
+            return pattern(
+                0.0, width, 0.0, height,
+                lithology.BASE_SPACING, lithology.BASE_SPACING)
+
+    @classmethod
+    def _legend_mark_rows(cls, name, marker=None):
+        _segments, marks, _coloured = cls._legend_geometry(name)
+        rows = {}
+        for mark in marks:
+            if marker is not None and mark[2] != marker:
+                continue
+            for x, y in zip(mark[0], mark[1]):
+                rows.setdefault(round(float(y) * 25.4, 4), []).append(
+                    round(float(x) * 25.4, 4))
+        return {key: sorted(value) for key, value in sorted(rows.items())}
+
     def test_standard_swatch_keeps_15_by_10_mm_and_canonical_pattern(self):
         names = ["砂岩", "泥岩", "石灰岩"]
         width = 6.0
@@ -848,6 +871,34 @@ class LegendCorrectnessTests(unittest.TestCase):
                 self.assertEqual(kwargs["spacing"], lithology.BASE_SPACING)
         finally:
             figure.clear()
+
+    def test_basic_rpbp_symbol_is_one_complete_centred_motif(self):
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+
+        spec, _face = gb958.spec_for("RPBP000014", "生物碎屑")
+        pattern = lithology.build_spec_pattern(spec)
+        with lithology.legend_swatch_scope(10, 3):
+            with lithology.legend_single_motif_scope():
+                _segments, marks, _coloured = pattern(
+                    0.0, width, 0.0, height,
+                    lithology.BASE_SPACING, lithology.BASE_SPACING)
+        points = [(float(x) * 25.4, float(y) * 25.4)
+                  for mark in marks for x, y in zip(mark[0], mark[1])]
+        self.assertEqual(points, [(7.5, 5.0)])
+
+        spec, _face = gb958.spec_for("RPBP000036", "不等粒")
+        pattern = lithology.build_spec_pattern(spec)
+        with lithology.legend_swatch_scope(10, 3):
+            with lithology.legend_single_motif_scope():
+                segments, _marks, _coloured = pattern(
+                    0.0, width, 0.0, height,
+                    lithology.BASE_SPACING, lithology.BASE_SPACING)
+        xs = [float(x) * 25.4 for segment in segments for x, _y in segment]
+        ys = [float(y) * 25.4 for segment in segments for _x, y in segment]
+        self.assertEqual(len(segments), 4)
+        self.assertAlmostEqual((min(xs) + max(xs)) / 2, 7.5, places=6)
+        self.assertAlmostEqual((min(ys) + max(ys)) / 2, 5.0, places=6)
 
     def test_sandstone_and_limestone_have_three_representative_bands(self):
         expected_pitch = (
@@ -920,6 +971,531 @@ class LegendCorrectnessTests(unittest.TestCase):
         self.assertTrue(all(rows == variants[0] for rows in variants[1:]))
         self.assertEqual(len(variants[0]), 3)
 
+    def test_standard_sandstone_uses_table4_four_three_four_array(self):
+        for name in ("砂岩", "粗砂岩", "中砂岩", "细砂岩"):
+            with self.subTest(name=name):
+                rows = self._legend_mark_rows(name, ".")
+                self.assertEqual([len(items) for items in rows.values()],
+                                 [4, 3, 4])
+                first, middle, last = list(rows.values())
+                self.assertEqual(first, last)
+                self.assertAlmostEqual(
+                    sum(first) / len(first), 7.5, places=6)
+                self.assertAlmostEqual(
+                    sum(middle) / len(middle), 7.5, places=6)
+
+    def test_clastic_qualifier_has_one_complete_alternating_anchor_per_band(self):
+        rows = self._legend_mark_rows("钙质砂岩", r"$\mathrm{Ca}$")
+        self.assertEqual([len(items) for items in rows.values()], [1, 1, 1])
+        first, middle, last = [items[0] for items in rows.values()]
+        self.assertEqual(first, last)
+        self.assertLess(first, 7.5)
+        self.assertGreater(middle, 7.5)
+
+        segments, _marks, _coloured = self._legend_geometry("含砾砂岩")
+        # Each ellipse is made of 16 short segments.  Its leftmost/rightmost
+        # points must clear the frame, and three bands contain one ellipse.
+        curved = [segment for segment in segments
+                  if abs(float(segment[0][1]) - float(segment[1][1])) > 1e-7]
+        self.assertEqual(len(curved), 48)
+        xs = [float(point[0]) * 25.4
+              for segment in curved for point in segment]
+        self.assertGreaterEqual(min(xs), lithology.LEGEND_SYMBOL_CLEARANCE_MM)
+        self.assertLessEqual(
+            max(xs),
+            lithology.LEGEND_SWATCH_WIDTH_MM
+            - lithology.LEGEND_SYMBOL_CLEARANCE_MM)
+
+    def test_clastic_base_and_modifier_share_standard_ratio_slots(self):
+        quality = self._legend_mark_rows("钙质砂岩", ".")
+        contained = self._legend_mark_rows("含砾砂岩", ".")
+        self.assertEqual([len(items) for items in quality.values()], [2, 2, 2])
+        self.assertEqual([len(items) for items in contained.values()],
+                         [3, 3, 3])
+
+        cases = (
+            ("钙质砂岩", [3, 6]),
+            ("含砾砂岩", [3, 9]),
+            ("石英杂砂岩", [6, 6]),
+            ("长石石英砂岩", [3, 3, 6]),
+        )
+        for name, expected_counts in cases:
+            with self.subTest(name=name):
+                _face, pattern_name = lithology.style_of(name)
+                spec = lithology.PATTERNS[pattern_name].source_spec
+                grouped = {}
+                bounds = lithology._legend_symbol_group_bounds(spec)
+                widths = {}
+                slots = None
+                for index, element in enumerate(spec):
+                    group = element.get("legend_group")
+                    if group is None:
+                        continue
+                    slots = int(element["legend_slots"])
+                    grouped.setdefault(group, set()).add(
+                        int(element["legend_slot_mask"]))
+                    widths[group] = bounds[index][1] - bounds[index][0]
+                masks = [next(iter(values)) for values in grouped.values()]
+                self.assertTrue(all(len(values) == 1
+                                    for values in grouped.values()))
+                self.assertEqual(sorted(mask.bit_count() for mask in masks),
+                                 expected_counts)
+                occupied = 0
+                for mask in masks:
+                    self.assertEqual(occupied & mask, 0)
+                    occupied |= mask
+                self.assertEqual(occupied, (1 << (3 * slots)) - 1)
+                slot_width = (lithology.LEGEND_SWATCH_WIDTH_MM
+                              / slots / 25.4)
+                self.assertTrue(all(width <= slot_width + 1e-9
+                                    for width in widths.values()))
+
+    def test_generated_quality_composite_uses_the_same_shared_slots(self):
+        # “钙质泥岩” is intentionally resolved by the generic qualifier
+        # fallback rather than the static GB catalogue.  That path must obey
+        # the same 2:1 matrix and must not overlay two independently centred
+        # symbol arrays.
+        _face, pattern_name = lithology.style_of("钙质泥岩")
+        pattern = lithology.PATTERNS[pattern_name]
+        groups = {}
+        slots = None
+        for element in pattern.source_spec:
+            group = element.get("legend_group")
+            if group is None:
+                continue
+            slots = int(element["legend_slots"])
+            groups.setdefault(group, set()).add(
+                int(element["legend_slot_mask"]))
+        self.assertEqual(slots, 3)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(len(values) == 1 for values in groups.values()))
+        masks = [next(iter(values)) for values in groups.values()]
+        self.assertEqual(sorted(mask.bit_count() for mask in masks), [3, 6])
+        self.assertEqual(masks[0] & masks[1], 0)
+        self.assertEqual(masks[0] | masks[1], (1 << 9) - 1)
+
+        calcium_rows = self._legend_mark_rows(
+            "钙质泥岩", r"$\mathrm{Ca}$")
+        self.assertEqual([len(items) for items in calcium_rows.values()],
+                         [1, 1, 1])
+
+    def test_generated_multi_modifier_is_complete_and_history_independent(self):
+        def resolve_signature(prime_inner):
+            local_lithologies = dict(lithology.LITHOLOGY)
+            local_patterns = dict(lithology.PATTERNS)
+            with mock.patch.object(
+                    lithology, "LITHOLOGY", local_lithologies), \
+                    mock.patch.object(
+                        lithology, "PATTERNS", local_patterns):
+                if prime_inner:
+                    self.assertEqual(
+                        lithology.resolve("硅质泥岩"), "硅质泥岩")
+                self.assertEqual(
+                    lithology.resolve("钙质硅质泥岩"), "钙质硅质泥岩")
+                _face, pattern_name = lithology.style_of("钙质硅质泥岩")
+                spec = lithology.PATTERNS[pattern_name].source_spec
+                return [
+                    (element.get("marker") or element.get("shape"),
+                     int(element["legend_group"]),
+                     int(element["legend_slot_mask"]),
+                     int(element["legend_slots"]))
+                    for element in spec if "legend_group" in element
+                ]
+
+        direct = resolve_signature(False)
+        primed = resolve_signature(True)
+        self.assertEqual(direct, primed)
+        self.assertEqual(
+            [item[0] for item in direct],
+            ["横条", r"$\mathrm{Si}$", r"$\mathrm{Ca}$"])
+        masks = [item[2] for item in direct]
+        self.assertEqual(sorted(mask.bit_count() for mask in masks),
+                         [3, 3, 6])
+        self.assertEqual(masks[0] | masks[1] | masks[2], (1 << 12) - 1)
+        self.assertFalse(masks[0] & masks[1])
+        self.assertFalse(masks[0] & masks[2])
+        self.assertFalse(masks[1] & masks[2])
+
+        # Both an explicitly grouped GB base and a legacy phase-only base
+        # must keep their existing constituent families when Ca is added.
+        for name, expected in (
+                ("钙质含砾砂岩", [".", "椭圆", r"$\mathrm{Ca}$"]),
+                ("钙质长石砂岩", [".", "N形", r"$\mathrm{Ca}$"])):
+            with self.subTest(name=name):
+                _face, pattern_name = lithology.style_of(name)
+                spec = lithology.PATTERNS[pattern_name].source_spec
+                families = [
+                    element for element in spec
+                    if "legend_group" in element
+                ]
+                self.assertEqual(
+                    [element.get("marker") or element.get("shape")
+                     for element in families], expected)
+                self.assertEqual(
+                    sorted(int(element["legend_slot_mask"]).bit_count()
+                           for element in families), [3, 3, 6])
+
+    def test_shale_quality_and_contains_use_distinct_standard_quotas(self):
+        quality = self._legend_mark_rows("钙质页岩", r"$\mathrm{Ca}$")
+        contained = self._legend_mark_rows("含碳质页岩", r"$\mathrm{C}$")
+        self.assertEqual([len(items) for items in quality.values()], [2, 1, 2])
+        self.assertEqual([len(items) for items in contained.values()], [1, 1, 1])
+        first, middle, last = [items[0] for items in contained.values()]
+        self.assertEqual(first, last)
+        self.assertLess(first, 7.5)
+        self.assertGreater(middle, 7.5)
+
+    def test_brick_modifier_uses_one_two_one_cell_centres(self):
+        rows = self._legend_mark_rows("铁质灰岩", r"$\mathrm{Fe}$")
+        self.assertEqual([len(items) for items in rows.values()], [1, 2, 1])
+        first, middle, last = list(rows.values())
+        self.assertEqual(first, [7.5])
+        self.assertEqual(first, last)
+        self.assertAlmostEqual(sum(middle) / 2, 7.5, places=6)
+
+    def test_chert_nodules_use_internal_course_boundaries(self):
+        original = lithology._PRIMS["shape"]
+
+        def positions_for(flip):
+            captured = []
+
+            def capture(*args, **kwargs):
+                captured.extend(
+                    kwargs.get("_legend_explicit_positions") or [])
+                return original(*args, **kwargs)
+
+            lithology._SHAPE_FLIP[0] = flip
+            with mock.patch.dict(lithology._PRIMS, {"shape": capture}):
+                self._legend_geometry("含燧石结核灰岩")
+            return captured
+
+        previous_flip = lithology._SHAPE_FLIP[0]
+        try:
+            captured = positions_for(False)  # inverted depth axis
+            normal_axis = positions_for(True)
+        finally:
+            lithology._SHAPE_FLIP[0] = previous_flip
+
+        _face, pattern_name = lithology.style_of("含燧石结核灰岩")
+        element = next(
+            item for item in lithology.PATTERNS[pattern_name].source_spec
+            if item.get("legend_course_boundary"))
+        xmin, xmax, ymin, ymax = lithology._legend_element_bounds(element)
+        centres = sorted(
+            ((round((x + (xmin + xmax) / 2) * 25.4, 4),
+              round((y + (ymin + ymax) / 2) * 25.4, 4))
+             for x, y in captured),
+            key=lambda point: (point[1], point[0]))
+        self.assertEqual(len(centres), 3)
+        self.assertEqual([point[1] for point in centres],
+                         [3.3333, 3.3333, 6.6667])
+        self.assertAlmostEqual(centres[0][0] + centres[1][0], 15.0,
+                               places=4)
+        self.assertEqual(centres[2][0], 7.5)
+        normal_rows = {}
+        for _x, y in normal_axis:
+            normal_rows[round(y * 25.4, 4)] = (
+                normal_rows.get(round(y * 25.4, 4), 0) + 1)
+        # On a normal y-up catalogue axis the denser boundary remains
+        # visually upper; on a depth y-down axis it remains visually upper
+        # by occupying the smaller data-coordinate value.
+        self.assertEqual([normal_rows[key] for key in sorted(normal_rows)],
+                         [1, 2])
+
+        outline = lithology._SHAPES["实心透镜"][0]
+        self.assertEqual(outline[0], outline[-1])
+        self.assertGreaterEqual(len(lithology._SHAPES["实心透镜"]), 8)
+
+    def test_ell_modifier_is_visually_centred_on_brick_cells(self):
+        segments, _marks, _coloured = self._legend_geometry("灰质白云岩")
+        glyph_size = 0.32 * lithology.BASE_SPACING * 25.4
+        horizontals = []
+        for segment in segments:
+            x0, y0 = (float(value) * 25.4 for value in segment[0])
+            x1, y1 = (float(value) * 25.4 for value in segment[1])
+            if (abs(y0 - y1) < 1e-8
+                    and math.isclose(abs(x1 - x0), glyph_size,
+                                     rel_tol=0, abs_tol=1e-7)):
+                horizontals.append(((x0 + x1) / 2, (y0 + y1) / 2))
+
+        rows = {}
+        for x, y in horizontals:
+            rows.setdefault(round(y, 4), []).append(round(x, 4))
+        rows = [sorted(items) for _y, items in sorted(rows.items())]
+        self.assertEqual([len(items) for items in rows], [1, 2, 1])
+        self.assertEqual(rows[0], [7.5])
+        self.assertEqual(rows[0], rows[2])
+        self.assertAlmostEqual(sum(rows[1]) / 2, 7.5, places=4)
+        self.assertGreaterEqual(
+            min(x for row in rows for x in row) - glyph_size / 2,
+            lithology.LEGEND_SYMBOL_CLEARANCE_MM)
+        self.assertLessEqual(
+            max(x for row in rows for x in row) + glyph_size / 2,
+            lithology.LEGEND_SWATCH_WIDTH_MM
+            - lithology.LEGEND_SYMBOL_CLEARANCE_MM)
+
+    def test_ell_keeps_declared_horizontal_phase_and_pitch(self):
+        base, _marks = lithology._prim_ell(
+            0.0, 1.0, 0.0, 1.0, spacing=2.0, xspacing=3.0,
+            xoff=0.0, stagger=False)
+        shifted, _marks = lithology._prim_ell(
+            0.0, 1.0, 0.0, 1.0, spacing=2.0, xspacing=3.0,
+            xoff=0.5, stagger=False)
+        expected_shift = 0.5 * 3.0 * lithology.BASE_SPACING
+        self.assertAlmostEqual(
+            shifted[0][0][0] - base[0][0][0], expected_shift, places=9)
+
+        pattern = lithology.build_spec_pattern([
+            {"type": "brick", "spacing": 2.0, "ratio": 2.2},
+            {"type": "ell", "spacing": 3.0, "xspacing": 4.0},
+        ], fixed_layer_rows=True)
+        effective = pattern.effective_spec_for(5.0)
+        ell = next(element for element in effective
+                   if element["type"] == "ell")
+        self.assertEqual(ell["xspacing"], 4.0)
+
+    def test_ell_keeps_lower_left_visual_orientation_on_both_axis_directions(self):
+        previous_flip = lithology._SHAPE_FLIP[0]
+        try:
+            for flip, visual_scale in ((False, -1.0), (True, 1.0)):
+                with self.subTest(y_axis="up" if flip else "down"):
+                    lithology._SHAPE_FLIP[0] = flip
+                    segments, _marks = lithology._prim_ell(
+                        0.0, 1.0, 0.0, 1.0,
+                        _legend_single_anchor=(0.5, 0.5))
+                    horizontal, vertical = segments
+                    baseline = float(horizontal[0][1])
+                    tip = next(
+                        float(point[1]) for point in vertical
+                        if not math.isclose(float(point[1]), baseline,
+                                            abs_tol=1e-12))
+                    # Screen-space y grows upward after applying the axis
+                    # direction.  The vertical stem must rise from the left
+                    # end of the horizontal stroke, i.e. remain visually └.
+                    self.assertGreater(
+                        (tip - baseline) * visual_scale, 0.0)
+                    self.assertEqual(vertical[0][0], horizontal[0][0])
+        finally:
+            lithology._SHAPE_FLIP[0] = previous_flip
+
+    def test_asymmetric_vector_rows_are_centred_by_visible_bounds(self):
+        segments, _marks, _coloured = self._legend_geometry("拉斑玄武岩")
+        bands = {0: [], 1: [], 2: []}
+        for segment in segments:
+            points = [(float(x) * 25.4, float(y) * 25.4)
+                      for x, y in segment]
+            centre_y = sum(point[1] for point in points) / len(points)
+            band = min(bands, key=lambda index: abs(
+                centre_y - (index + 0.5) * 10 / 3))
+            bands[band].extend(point[0] for point in points)
+
+        self.assertEqual(
+            [round((min(xs) + max(xs)) / 2, 5)
+             for xs in bands.values()],
+            [7.5, 7.5, 7.5])
+        counts = []
+        for xs in bands.values():
+            # Γ is 1.6 mm wide and the bold duplicate extends 0.1 mm.  Each
+            # gap larger than that visible glyph width starts another symbol.
+            ordered = sorted(set(round(value, 6) for value in xs))
+            counts.append(1 + sum(
+                right - left > 1.700001
+                for left, right in zip(ordered, ordered[1:])))
+        self.assertEqual(counts, [4, 3, 4])
+
+    def test_feldspathic_sandstone_uses_shared_four_slot_rows(self):
+        rows = self._legend_mark_rows("长石砂岩", ".")
+        self.assertEqual([len(items) for items in rows.values()], [2, 2, 2])
+        first, middle, last = list(rows.values())
+        self.assertEqual(first, last)
+        self.assertNotEqual(first, middle)
+
+        segments, _marks, _coloured = self._legend_geometry("长石砂岩")
+        # Each N has two vertical stems; two N symbols per band therefore
+        # produce four long vertical segments on each of the three rows.
+        stems = [segment for segment in segments
+                 if (abs(float(segment[0][0]) - float(segment[1][0])) < 1e-8
+                     and abs(float(segment[0][1]) - float(segment[1][1]))
+                     > 1.0 / 25.4)]
+        stem_rows = {}
+        for segment in stems:
+            centre = round(
+                (float(segment[0][1]) + float(segment[1][1])) * 12.7, 4)
+            stem_rows[centre] = stem_rows.get(centre, 0) + 1
+        self.assertEqual(sorted(stem_rows.values()), [4, 4, 4])
+
+    def test_basic_composites_use_fixed_local_component_offsets(self):
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        cases = (
+            ("RPBP000038", "似斑状", (0.0, 0.0)),
+            ("RPBP000041", "含斑", (1.45, 0.95)),
+            ("RPBP000057", "石泡", (0.0, 0.0)),
+            ("RPBP000075", "泥晶", (0.0, 0.0)),
+            ("RPBP010078", "细晶", (0.0, 0.0)),
+            ("RPBP010082", "渗透(状)", (0.0, 0.0)),
+        )
+        for code, name, expected_offset in cases:
+            with self.subTest(code=code):
+                spec, _face = gb958.spec_for(code, name)
+                anchors = lithology._legend_single_motif_anchors(
+                    spec, width, height)
+                self.assertEqual(len(anchors), 2)
+                first, second = anchors[0], anchors[1]
+                self.assertAlmostEqual(
+                    (second[0] - first[0]) * 25.4,
+                    expected_offset[0], places=6)
+                self.assertAlmostEqual(
+                    (second[1] - first[1]) * 25.4,
+                    expected_offset[1], places=6)
+
+        spec, _face = gb958.spec_for("RPBP000037", "斑状")
+        self.assertEqual(len(spec), 1)
+        spec, _face = gb958.spec_for("RPBP000040", "少斑")
+        self.assertEqual(len(spec), 1)
+
+    def test_basic_texture_has_one_independent_central_feature(self):
+        spec, _face = gb958.spec_for("RPBP010084", "眼球(状)")
+        pattern = lithology.build_spec_pattern(spec, fixed_layer_rows=True)
+        calls = []
+        original = lithology._PRIMS["shape"]
+
+        def capture(*args, **kwargs):
+            calls.append(kwargs.get("_legend_single_anchor"))
+            return original(*args, **kwargs)
+
+        width = lithology.LEGEND_SWATCH_WIDTH_MM / 25.4
+        height = lithology.LEGEND_SWATCH_HEIGHT_MM / 25.4
+        with mock.patch.dict(lithology._PRIMS, {"shape": capture}):
+            with lithology.legend_swatch_scope(10, 2):
+                pattern(0.0, width, 0.0, height,
+                        lithology.BASE_SPACING, lithology.BASE_SPACING)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[0])
+        self.assertIsNotNone(calls[1])
+
+    def test_pyroclastic_legends_share_one_four_slot_standard_matrix(self):
+        cases = (
+            ("RPMM034002", "安山质集块岩", 3, [3, 9]),
+            ("RPMM034015", "安山质熔结火山碎屑岩(未分)",
+             3, [3, 3, 6]),
+            ("RPMM034028", "安山质火山碎屑熔岩(未分)",
+             9, [3, 9]),
+        )
+        for code, name, composition_count, expected_counts in cases:
+            with self.subTest(code=code):
+                spec, _face = gb958.spec_for(code, name)
+                groups = {}
+                for element in spec:
+                    group = element.get("legend_group")
+                    if group is None:
+                        continue
+                    groups.setdefault(group, set()).add(
+                        int(element["legend_slot_mask"]))
+                self.assertTrue(groups)
+                self.assertTrue(all(len(masks) == 1
+                                    for masks in groups.values()))
+                masks = [next(iter(value)) for value in groups.values()]
+                self.assertEqual(sorted(mask.bit_count() for mask in masks),
+                                 expected_counts)
+                self.assertEqual(
+                    next(iter(groups[1])).bit_count(), composition_count)
+                occupied = 0
+                for mask in masks:
+                    self.assertEqual(occupied & mask, 0)
+                    occupied |= mask
+                self.assertEqual(occupied, (1 << 12) - 1)
+
+    def test_composite_motif_stagger_is_legend_only(self):
+        code = "RPSE021091"
+        name = next(name for entry_code, name in gb958.ENTRIES
+                    if entry_code == code)
+        spec, _face = gb958.spec_for(code, name)
+        mud_crystal = [
+            element for element in spec
+            if ((element.get("type") == "shape"
+                 and element.get("shape") == "竖梭")
+                or (element.get("type") == "markers"
+                    and element.get("marker") == "."))
+        ]
+        self.assertEqual(len(mud_crystal), 2)
+        self.assertTrue(all(element["stagger"] is False
+                            for element in mud_crystal))
+        self.assertTrue(all(element["legend_stagger"] is True
+                            for element in mud_crystal))
+        self.assertEqual({element["xoff"] for element in mud_crystal}, {0.5})
+
+        pyro_code = "RPMM031015"
+        pyro_name = next(name for entry_code, name in gb958.ENTRIES
+                         if entry_code == pyro_code)
+        pyro_spec, _face = gb958.spec_for(pyro_code, pyro_name)
+        colons = [element for element in pyro_spec
+                  if element.get("marker") == r"$\mathrm{:}$"]
+        self.assertEqual(len(colons), 2)
+        self.assertTrue(all(element["stagger"] is False
+                            for element in colons))
+        self.assertTrue(all(element["legend_stagger"] is True
+                            for element in colons))
+
+        # Outside a legend scope the two colon components retain a constant
+        # local 0.16-cell separation on every row of the actual chart.
+        pattern = lithology.build_spec_pattern(
+            pyro_spec, fixed_layer_rows=True)
+        width, height = 30 / 25.4, 25 / 25.4
+        _segments, marks, _coloured = pattern(
+            0.0, width, 0.0, height,
+            lithology.BASE_SPACING, lithology.BASE_SPACING)
+        colon_marks = [mark for mark in marks
+                       if mark[2] == r"$\mathrm{:}$"]
+        self.assertEqual(len(colon_marks), 2)
+        by_row = []
+        for mark in colon_marks:
+            rows = {}
+            for x, y in zip(mark[0], mark[1]):
+                rows.setdefault(round(float(y), 9), []).append(float(x))
+            by_row.append(rows)
+        common_rows = sorted(set(by_row[0]) & set(by_row[1]))
+        self.assertGreaterEqual(len(common_rows), 3)
+        expected_gap = 0.16 * 2.0 * lithology.BASE_SPACING
+        for row in common_rows:
+            nearest = min(abs(left - right)
+                          for left in by_row[0][row]
+                          for right in by_row[1][row])
+            self.assertAlmostEqual(nearest, expected_gap, places=9)
+
+    def test_all_pyroclastic_slot_groups_fit_without_physical_overlap(self):
+        slot_width = lithology.LEGEND_SWATCH_WIDTH_MM / 4 / 25.4
+        groups = dict(gb958.catalog())["火山碎屑岩"]
+        for _subsection, entries in groups:
+            for code, name in entries:
+                with self.subTest(code=code):
+                    spec, _face = gb958.spec_for(code, name)
+                    grouped_masks = {}
+                    grouped_widths = {}
+                    bounds = lithology._legend_symbol_group_bounds(spec)
+                    for index, element in enumerate(spec):
+                        group = element.get("legend_group")
+                        if group is None:
+                            continue
+                        grouped_masks.setdefault(group, set()).add(
+                            int(element["legend_slot_mask"]))
+                        if index in bounds:
+                            left, right = bounds[index]
+                            grouped_widths[group] = right - left
+                    masks = []
+                    for group, values in grouped_masks.items():
+                        self.assertEqual(len(values), 1)
+                        mask = next(iter(values))
+                        self.assertGreater(mask, 0)
+                        masks.append(mask)
+                        self.assertLessEqual(
+                            grouped_widths[group], slot_width + 1e-9)
+                    occupied = 0
+                    for mask in masks:
+                        self.assertEqual(occupied & mask, 0)
+                        occupied |= mask
+                    self.assertEqual(occupied, (1 << 12) - 1)
+
     def test_explicit_custom_rows_are_not_forced_to_three(self):
         spec = [{"type": "rows", "spacing": 1.2,
                  "rows": [["小点"], ["横线"], ["十字"]]},
@@ -927,6 +1503,19 @@ class LegendCorrectnessTests(unittest.TestCase):
         pattern = lithology.build_spec_pattern(spec, fixed_layer_rows=True)
         self.assertFalse(pattern.legend_fixed_rows)
         self.assertEqual(pattern.legend_spec_for(10, 3), pattern.source_spec)
+
+    def test_shared_slot_mask_rejects_empty_or_out_of_matrix_metadata(self):
+        base = {"type": "markers", "marker": ".", "spacing": 2.0}
+        cases = (
+            (dict(base, legend_slots=4, legend_slot_mask=0), "非零"),
+            (dict(base, legend_slot_mask=1), "legend_slots"),
+            (dict(base, legend_slots=4, legend_slot_period=3,
+                  legend_slot_mask=1 << 12), "超出"),
+        )
+        for element, message in cases:
+            with self.subTest(element=element):
+                with self.assertRaisesRegex(ValueError, message):
+                    lithology.build_spec_pattern([element])
 
     def test_grid_balances_rows_and_avoids_singleton_last_row(self):
         for count, expected_rows in ((19, 2), (28, 3)):
