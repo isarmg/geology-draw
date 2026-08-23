@@ -20,6 +20,34 @@ python -m pip install -r requirements.txt
 只有运行旧桌面界面才需要 tkinter（Debian/Ubuntu：`apt install python3-tk`）。
 Server 与 Web 前端使用 Python/浏览器标准库，不需要 Node.js，也没有前端构建步骤。
 
+### Linux x86-64 预编译版
+
+每个 `v*` 版本标签都会由 GitHub Actions 自动构建并发布 Linux x86-64
+单文件程序。可从仓库的 **Releases** 页面下载
+`geology-draw-linux-x86_64.tar.gz`，然后运行：
+
+```bash
+tar -xzf geology-draw-linux-x86_64.tar.gz
+cd geology-draw-linux-x86_64
+./geology-draw-linux-x86_64
+```
+
+浏览器访问 <http://127.0.0.1:8000>。压缩包旁的 `.sha256` 文件可用于校验：
+
+```bash
+sha256sum -c geology-draw-linux-x86_64.tar.gz.sha256
+```
+
+该程序面向 64 位 x86 Linux，建议系统使用 glibc 2.35 或更高版本，并安装
+Noto Sans CJK 等中文字体。
+
+维护者发布新版本时，在通过 CI 的提交上推送版本标签即可：
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
 ## 使用
 
 ### Server + Web（默认）
